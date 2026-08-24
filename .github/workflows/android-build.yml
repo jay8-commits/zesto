@@ -21,24 +21,23 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
+      - name: Setup Gradle Environment
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
-      - name: Verify Gradle Version
+      - name: Generate Official Gradle Wrapper
         run: |
-          if [ -f "gradlew" ] && [ -s "gradle/wrapper/gradle-wrapper.jar" ]; then
-            chmod +x gradlew
-            ./gradlew --version
-          else
-            gradle wrapper
-            chmod +x gradlew
-            ./gradlew --version
-          fi
+          gradle wrapper --gradle-version 9.3.1
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Clean Project
+        run: ./gradlew clean --no-daemon
 
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --no-daemon --stacktrace

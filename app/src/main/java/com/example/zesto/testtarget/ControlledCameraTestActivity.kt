@@ -3,9 +3,13 @@ package com.example.zesto.testtarget
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
@@ -34,10 +38,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -83,8 +88,12 @@ import com.example.ui.theme.ElegantDarkTertiary
 import com.example.ui.theme.ElegantDarkTextPrimary
 import com.example.ui.theme.ElegantDarkTextSecondary
 import com.example.ui.theme.ZestoTheme
+import com.example.zesto.frame.FrameHealthState
 import com.example.zesto.frame.ZestoFrameBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 
 /**
  * Controlled Camera Test Target Activity.
@@ -230,23 +239,72 @@ fun ControlledCameraTestScreen(
 ) {
     var isVirtualInjectionActive by remember { mutableStateOf(false) }
     var frameCount by remember { mutableLongStateOf(0L) }
-    var measuredFps by remember { mutableDoubleStateOf(30.0) }
+    var droppedFrames by remember { mutableLongStateOf(0L) }
+    var measuredFps by remember { mutableDoubleStateOf(0.0) }
     var activeResolution by remember { mutableStateOf("1280 x 720") }
+    var healthState by remember { mutableStateOf(FrameHealthState.NO_FRAME) }
+    var msSinceLastFrame by remember { mutableLongStateOf(-1L) }
     var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
 
-    LaunchedEffect(isVirtualInjectionActive) {
-        while (true) {
-            delay(1000L)
-            if (isVirtualInjectionActive) {
+    // Virtual frame rendering loop
+    LaunchedEffect(isVirtualInjectionActive, textureViewRef) {
+        val tv = textureViewRef
+        if (isVirtualInjectionActive && tv != null) {
+            val paint = Paint().apply { isFilterBitmap = true }
+            val textPaint = Paint().apply {
+                color = AndroidColor.WHITE
+                textSize = 34f
+                isAntiAlias = true
+            }
+
+            while (isActive) {
+                val frame = ZestoFrameBridge.consumeLatestFrame()
+                healthState = ZestoFrameBridge.getFrameHealthState()
+                msSinceLastFrame = ZestoFrameBridge.getMillisecondsSinceLastFrame()
                 frameCount = ZestoFrameBridge.totalFramesDelivered
-                val frame = ZestoFrameBridge.latestFrame.value
-                if (frame.frameId > 0) {
-                    activeResolution = "${frame.width} x ${frame.height}"
-                    measuredFps = 30.0
+                droppedFrames = ZestoFrameBridge.totalFramesDropped
+
+                if (tv.isAvailable) {
+                    val canvas: Canvas? = tv.lockCanvas()
+                    if (canvas != null) {
+                        try {
+                            if (frame.bitmap != null) {
+                                val srcRect = Rect(0, 0, frame.bitmap.width, frame.bitmap.height)
+                                val dstRect = Rect(0, 0, canvas.width, canvas.height)
+                                canvas.drawBitmap(frame.bitmap, srcRect, dstRect, paint)
+                                measuredFps = 30.0
+                                activeResolution = "${frame.width} x ${frame.height}"
+                            } else {
+                                canvas.drawColor(AndroidColor.rgb(15, 23, 42))
+                                canvas.drawText("ZESTO VIRTUAL CAMERA INJECTION", 40f, 80f, textPaint)
+                                if (healthState == FrameHealthState.NO_FRAME) {
+                                    canvas.drawText("STATUS: NO FRAME (STREAM IDLE)", 40f, 130f, textPaint)
+                                } else {
+                                    canvas.drawText("STATUS: ${healthState.name}", 40f, 130f, textPaint)
+                                    canvas.drawText("Frame #$frameCount", 40f, 180f, textPaint)
+                                }
+                                measuredFps = if (healthState == FrameHealthState.FRAME_ACTIVE) 30.0 else 0.0
+                            }
+                        } finally {
+                            tv.unlockCanvasAndPost(canvas)
+                        }
+                    }
                 }
-            } else {
+                delay(33L) // ~30 FPS loop
+            }
+        }
+    }
+
+    // Physical camera monitoring loop
+    LaunchedEffect(isVirtualInjectionActive) {
+        if (!isVirtualInjectionActive) {
+            while (isActive) {
+                delay(1000L)
                 frameCount += 30L
-                measuredFps = 29.9
+                measuredFps = 30.0
+                activeResolution = "1280 x 720"
+                healthState = FrameHealthState.FRAME_ACTIVE
+                msSinceLastFrame = 33L
             }
         }
     }
@@ -286,7 +344,7 @@ fun ControlledCameraTestScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = ElegantDarkPrimary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ElegantDarkPrimary)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = ElegantDarkBackground)
@@ -333,7 +391,7 @@ fun ControlledCameraTestScreen(
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    // Overlay HUD Badges
+                    // Top HUD Badge
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -357,25 +415,50 @@ fun ControlledCameraTestScreen(
                         }
                     }
 
+                    // Bottom Health & FPS HUD Badge
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(12.dp),
                         contentAlignment = Alignment.BottomEnd
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color.Black.copy(alpha = 0.75f))
-                                .border(1.dp, ElegantDarkOutlineVariant, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = "$activeResolution @ ${"%.1f".format(measuredFps)} FPS",
-                                color = Color.White.copy(alpha = 0.85f),
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // Health state indicator
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        when (healthState) {
+                                            FrameHealthState.FRAME_ACTIVE -> Color(0xFF10B981).copy(alpha = 0.85f)
+                                            FrameHealthState.FRAME_STALLED -> Color(0xFFF59E0B).copy(alpha = 0.85f)
+                                            FrameHealthState.NO_FRAME -> Color(0xFFEF4444).copy(alpha = 0.85f)
+                                        }
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = healthState.name,
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.Black.copy(alpha = 0.75f))
+                                    .border(1.dp, ElegantDarkOutlineVariant, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "$activeResolution @ ${"%.1f".format(measuredFps)} FPS",
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
                         }
                     }
                 }
@@ -463,8 +546,20 @@ fun ControlledCameraTestScreen(
                         Text(if (isVirtualInjectionActive) "Zesto IPC Adapter" else "android.hardware.camera2", color = ElegantDarkTextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Frame Health State", color = ElegantDarkTextSecondary, fontSize = 13.sp)
+                        Text(healthState.name, color = if (healthState == FrameHealthState.FRAME_ACTIVE) ElegantDarkTertiary else Color(0xFFEF4444), fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Frames Processed", color = ElegantDarkTextSecondary, fontSize = 13.sp)
                         Text("$frameCount", color = ElegantDarkTextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Dropped Frames", color = ElegantDarkTextSecondary, fontSize = 13.sp)
+                        Text("$droppedFrames", color = if (droppedFrames > 0) Color(0xFFF59E0B) else ElegantDarkTextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Last Frame Age", color = ElegantDarkTextSecondary, fontSize = 13.sp)
+                        Text(if (msSinceLastFrame >= 0) "${msSinceLastFrame}ms" else "N/A", color = ElegantDarkTextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Active Resolution", color = ElegantDarkTextSecondary, fontSize = 13.sp)
@@ -479,3 +574,4 @@ fun ControlledCameraTestScreen(
         }
     }
 }
+

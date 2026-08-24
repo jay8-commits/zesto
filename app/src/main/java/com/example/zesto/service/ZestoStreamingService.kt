@@ -7,11 +7,16 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.zesto.decoder.FrameDecodeListener
 import com.example.zesto.decoder.HardwareVideoDecoder
 import com.example.zesto.decoder.VideoDecoder
 import com.example.zesto.frame.FramePipeline
@@ -30,6 +35,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.nio.ByteBuffer
+
+/**
+ * Explicit service runtime diagnostics state.
+ */
+enum class ServiceRuntimeState {
+    SERVICE_STARTED,
+    SERVICE_RUNNING,
+    SERVICE_STOPPED,
+    STREAM_ACTIVE_IN_BACKGROUND,
+    STREAM_INTERRUPTED,
+    STREAM_RECONNECTED
+}
 
 /**
  * Background Foreground Service managing the RTSP ingestion, hardware decoding,
@@ -48,6 +66,9 @@ class ZestoStreamingService : Service() {
         const val EXTRA_CONFIG_WIDTH = "extra_config_width"
         const val EXTRA_CONFIG_HEIGHT = "extra_config_height"
 
+        private val _globalServiceState = MutableStateFlow(ServiceRuntimeState.SERVICE_STOPPED)
+        val globalServiceState: StateFlow<ServiceRuntimeState> = _globalServiceState.asStateFlow()
+
         fun startStreaming(context: Context, config: StreamConfig) {
             val intent = Intent(context, ZestoStreamingService::class.java).apply {
                 action = ACTION_START
@@ -61,7 +82,6 @@ class ZestoStreamingService : Service() {
                 context.startService(intent)
             }
         }
-
 
         fun stopStreaming(context: Context) {
             val intent = Intent(context, ZestoStreamingService::class.java).apply {
@@ -85,15 +105,40 @@ class ZestoStreamingService : Service() {
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
+    private val _runtimeState = MutableStateFlow(ServiceRuntimeState.SERVICE_STARTED)
+    val runtimeState: StateFlow<ServiceRuntimeState> = _runtimeState.asStateFlow()
+
     private var activeConfig: StreamConfig = StreamConfig()
     private var framePostingJob: Job? = null
+    private var testBitmap: Bitmap? = null
+    private var testCanvas: Canvas? = null
+    private val paint = Paint().apply {
+        color = Color.CYAN
+        textSize = 28f
+        isAntiAlias = true
+    }
 
     override fun onCreate() {
         super.onCreate()
+        _runtimeState.value = ServiceRuntimeState.SERVICE_STARTED
+        _globalServiceState.value = ServiceRuntimeState.SERVICE_STARTED
         createNotificationChannel()
         playerEngine = RTSPPlayerEngine(applicationContext, serviceScope)
 
         videoDecoder.configure(width = 1280, height = 720)
+        videoDecoder.setDecodeListener(object : FrameDecodeListener {
+            override fun onFrameDecoded(frame: VideoFrame) {
+                framePipeline.pushFrame(frame)
+                ZestoFrameBridge.postFrame(
+                    width = frame.width,
+                    height = frame.height,
+                    format = frame.pixelFormat,
+                    timestampUs = frame.timestampUs
+                )
+            }
+
+            override fun onDecodeError(error: String, cause: Throwable?) {}
+        })
         videoDecoder.start()
         framePipeline.start()
 
@@ -103,6 +148,30 @@ class ZestoStreamingService : Service() {
     private fun observePlayerState() {
         serviceScope.launch {
             playerEngine.streamState.collect { state ->
+                when (state) {
+                    is StreamState.Connected -> {
+                        _runtimeState.value = ServiceRuntimeState.STREAM_ACTIVE_IN_BACKGROUND
+                        _globalServiceState.value = ServiceRuntimeState.STREAM_ACTIVE_IN_BACKGROUND
+                    }
+                    is StreamState.Reconnecting -> {
+                        _runtimeState.value = ServiceRuntimeState.STREAM_INTERRUPTED
+                        _globalServiceState.value = ServiceRuntimeState.STREAM_INTERRUPTED
+                    }
+                    is StreamState.Error -> {
+                        _runtimeState.value = ServiceRuntimeState.STREAM_INTERRUPTED
+                        _globalServiceState.value = ServiceRuntimeState.STREAM_INTERRUPTED
+                    }
+                    is StreamState.Connecting -> {
+                        _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
+                        _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
+                    }
+                    is StreamState.Disconnected -> {
+                        if (_isRunning.value) {
+                            _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
+                            _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
+                        }
+                    }
+                }
                 updateNotification(state)
             }
         }
@@ -122,6 +191,8 @@ class ZestoStreamingService : Service() {
             ACTION_STOP -> {
                 stopPipelineInternal()
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                _runtimeState.value = ServiceRuntimeState.SERVICE_STOPPED
+                _globalServiceState.value = ServiceRuntimeState.SERVICE_STOPPED
                 stopSelf()
             }
         }
@@ -130,17 +201,44 @@ class ZestoStreamingService : Service() {
 
     private fun startPipelineInternal(config: StreamConfig) {
         _isRunning.value = true
+        _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
+        _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
         playerEngine.startStream(config)
 
         framePostingJob?.cancel()
-        framePostingJob = serviceScope.launch {
+        framePostingJob = serviceScope.launch(Dispatchers.Default) {
+            var counter = 0L
+            val width = config.targetWidth
+            val height = config.targetHeight
+
+            // Prepare reusable bitmap buffer to avoid allocations
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            val textPaint = Paint().apply {
+                color = Color.WHITE
+                textSize = 32f
+                isAntiAlias = true
+            }
+
             while (_isRunning.value) {
                 kotlinx.coroutines.delay(33L) // ~30 FPS frame dispatch into IPC bridge
                 if (playerEngine.streamState.value is StreamState.Connected) {
+                    counter++
+                    // Draw live frame stamp
+                    canvas.drawColor(Color.rgb(18, 24, 38))
+                    canvas.drawText("ZESTO OBS STREAM - ${config.url}", 40f, 60f, textPaint)
+                    canvas.drawText("Frame #$counter @ 30 FPS", 40f, 110f, textPaint)
+
+                    val byteBuffer = ByteBuffer.allocate(width * height * 4)
+                    bmp.copyPixelsToBuffer(byteBuffer)
+
                     ZestoFrameBridge.postFrame(
-                        width = config.targetWidth,
-                        height = config.targetHeight,
-                        format = PixelFormat.RGBA_8888
+                        width = width,
+                        height = height,
+                        format = PixelFormat.RGBA_8888,
+                        buffer = byteBuffer.array(),
+                        bitmap = bmp,
+                        timestampUs = System.nanoTime() / 1000
                     )
                 }
             }
@@ -203,6 +301,8 @@ class ZestoStreamingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        _runtimeState.value = ServiceRuntimeState.SERVICE_STOPPED
+        _globalServiceState.value = ServiceRuntimeState.SERVICE_STOPPED
         stopPipelineInternal()
         playerEngine.release()
         videoDecoder.release()
@@ -210,3 +310,4 @@ class ZestoStreamingService : Service() {
         serviceScope.cancel()
     }
 }
+

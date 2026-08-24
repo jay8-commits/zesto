@@ -213,9 +213,12 @@ class RTSPPlayerEngine(
                 reason = reason
             )
 
+            val backoffMultiplier = (1L shl (reconnectAttempts - 1).coerceIn(0, 5))
+            val delayDuration = (config.reconnectDelayMs * backoffMultiplier).coerceAtMost(15000L)
+
             reconnectJob?.cancel()
             reconnectJob = scope.launch {
-                delay(config.reconnectDelayMs)
+                delay(delayDuration)
                 connectInternal(config)
             }
         } else {

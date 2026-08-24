@@ -1,11 +1,22 @@
 package com.example.zesto.hook
 
 import android.content.Context
-import android.graphics.SurfaceTexture
 import android.net.Uri
 import android.os.Bundle
-import android.view.Surface
-import java.lang.reflect.Method
+import android.util.Log
+
+/**
+ * Diagnostic stages for the LSPosed / LSPatch Xposed injection pipeline.
+ */
+enum class XposedHookLifecycle {
+    MODULE_LOADED,
+    TARGET_PROCESS_DETECTED,
+    HOOK_REGISTERED,
+    CAMERA_API_DETECTED,
+    FRAME_SOURCE_CONNECTED,
+    VIRTUAL_CAMERA_ACTIVE,
+    HOOK_FAILED
+}
 
 /**
  * Zesto Camera Virtualization Hook Entry Point.
@@ -19,6 +30,14 @@ class ZestoXposedInit {
     companion object {
         const val MODULE_TAG = "ZestoXposedHook"
         const val PROVIDER_URI = "content://com.example.zesto.frameprovider/frame"
+
+        private var currentLifecycle = XposedHookLifecycle.MODULE_LOADED
+        val lifecycle: XposedHookLifecycle get() = currentLifecycle
+    }
+
+    init {
+        currentLifecycle = XposedHookLifecycle.MODULE_LOADED
+        Log.i(MODULE_TAG, "[MODULE_LOADED] Zesto Xposed/LSPatch module initialized.")
     }
 
     /**
@@ -32,11 +51,20 @@ class ZestoXposedInit {
             val classLoader = classLoaderField.get(lpparam) as? ClassLoader ?: return
 
             if (shouldHookPackage(packageName)) {
+                currentLifecycle = XposedHookLifecycle.TARGET_PROCESS_DETECTED
+                Log.i(MODULE_TAG, "[TARGET_PROCESS_DETECTED] Intercepting target process: $packageName")
+
                 hookCamera2Pipeline(classLoader)
                 hookLegacyCameraPipeline(classLoader)
                 hookCameraXPipeline(classLoader)
+
+                currentLifecycle = XposedHookLifecycle.HOOK_REGISTERED
+                Log.i(MODULE_TAG, "[HOOK_REGISTERED] Virtualization hooks registered for: $packageName")
             }
-        } catch (_: Exception) {}
+        } catch (e: Throwable) {
+            currentLifecycle = XposedHookLifecycle.HOOK_FAILED
+            Log.e(MODULE_TAG, "[HOOK_FAILED] Error during load package handling: ${e.message}")
+        }
     }
 
     private fun shouldHookPackage(packageName: String): Boolean {
@@ -84,3 +112,4 @@ object ZestoRemoteFrameReceiver {
         }
     }
 }
+

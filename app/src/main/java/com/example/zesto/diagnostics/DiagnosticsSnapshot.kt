@@ -3,7 +3,9 @@ package com.example.zesto.diagnostics
 import com.example.zesto.camera.CameraApiType
 import com.example.zesto.camera.CameraVirtualizationStatus
 import com.example.zesto.decoder.DecoderStats
+import com.example.zesto.frame.FrameHealthState
 import com.example.zesto.frame.FramePipelineStats
+import com.example.zesto.service.ServiceRuntimeState
 import com.example.zesto.stream.StreamStats
 
 /**
@@ -54,11 +56,17 @@ data class DiagnosticsSnapshot(
 
     // Frame Pipeline Layer
     val pipelineStatus: String = "IDLE",
+    val frameHealthState: FrameHealthState = FrameHealthState.NO_FRAME,
+    val msSinceLastFrame: Long = -1L,
     val deliveredFrames: Long = 0L,
     val pipelineDroppedFrames: Long = 0L,
     val pipelineLatencyMs: Long = 0L,
     val activeConsumers: Int = 0,
     val pipelineStats: FramePipelineStats = FramePipelineStats(),
+
+    // Service & IPC Layer
+    val serviceRuntimeState: ServiceRuntimeState = ServiceRuntimeState.SERVICE_STOPPED,
+    val ipcProviderStatus: String = "ONLINE (AUTHORITY: com.example.zesto.frameprovider)",
 
     // Camera API Layer
     val detectedCameraApi: CameraApiType = CameraApiType.CAMERA2,
@@ -76,3 +84,4 @@ data class DiagnosticsSnapshot(
     val faultSubsystem: Subsystem? = null,
     val lastErrorMessage: String? = null
 )
+

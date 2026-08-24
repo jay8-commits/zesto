@@ -90,6 +90,23 @@ class DiagnosticsManager(
         }
     }
 
+    fun updateFrameHealth(health: com.example.zesto.frame.FrameHealthState, msAgo: Long) {
+        _snapshot.update { current ->
+            current.copy(
+                frameHealthState = health,
+                msSinceLastFrame = msAgo
+            )
+        }
+    }
+
+    fun updateServiceState(serviceState: com.example.zesto.service.ServiceRuntimeState) {
+        _snapshot.update { current ->
+            current.copy(
+                serviceRuntimeState = serviceState
+            )
+        }
+    }
+
     fun updateCameraDetection(apiType: CameraApiType, hwLevel: String) {
         _snapshot.update {
             it.copy(

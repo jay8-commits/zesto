@@ -7,13 +7,13 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.Executors
 
 /**
- * IPC ContentProvider for cross-process frame streaming.
+ * IPC ContentProvider for zero-latency cross-process frame streaming.
  * Allows target applications and Xposed/LSPatch hooks running in other processes
- * to fetch live decoded video frames and metadata from Zesto.
+ * to fetch live decoded video frames, health diagnostics, and metadata from Zesto.
  */
 class ZestoFrameContentProvider : ContentProvider() {
 
@@ -23,6 +23,7 @@ class ZestoFrameContentProvider : ContentProvider() {
 
         const val METHOD_GET_FRAME_META = "getFrameMeta"
         const val METHOD_IS_STREAMING = "isStreaming"
+        const val METHOD_GET_HEALTH_STATE = "getHealthState"
 
         const val KEY_FRAME_ID = "frame_id"
         const val KEY_WIDTH = "width"
@@ -30,6 +31,11 @@ class ZestoFrameContentProvider : ContentProvider() {
         const val KEY_TIMESTAMP_US = "timestamp_us"
         const val KEY_FORMAT = "format"
         const val KEY_IS_STREAMING = "is_streaming"
+        const val KEY_BUFFER_SIZE = "buffer_size"
+        const val KEY_HEALTH_STATE = "health_state"
+        const val KEY_MS_SINCE_LAST_FRAME = "ms_since_last_frame"
+
+        private val pipeExecutor = Executors.newCachedThreadPool()
     }
 
     override fun onCreate(): Boolean = true
@@ -41,40 +47,83 @@ class ZestoFrameContentProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
         sortOrder: String?
     ): Cursor {
-        val cursor = MatrixCursor(arrayOf(KEY_FRAME_ID, KEY_WIDTH, KEY_HEIGHT, KEY_TIMESTAMP_US, KEY_FORMAT))
+        val cursor = MatrixCursor(arrayOf(
+            KEY_FRAME_ID,
+            KEY_WIDTH,
+            KEY_HEIGHT,
+            KEY_TIMESTAMP_US,
+            KEY_FORMAT,
+            KEY_HEALTH_STATE,
+            KEY_MS_SINCE_LAST_FRAME
+        ))
         val frame = ZestoFrameBridge.consumeLatestFrame()
-        cursor.addRow(arrayOf<Any>(frame.frameId, frame.width, frame.height, frame.timestampUs, frame.format.name))
+        val health = ZestoFrameBridge.getFrameHealthState()
+        val msAgo = ZestoFrameBridge.getMillisecondsSinceLastFrame()
+        cursor.addRow(arrayOf<Any>(
+            frame.frameId,
+            frame.width,
+            frame.height,
+            frame.timestampUs,
+            frame.format.name,
+            health.name,
+            msAgo
+        ))
         return cursor
     }
 
-    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
         val result = Bundle()
+        val frame = ZestoFrameBridge.consumeLatestFrame()
+        val health = ZestoFrameBridge.getFrameHealthState()
+        val msAgo = ZestoFrameBridge.getMillisecondsSinceLastFrame()
+        val buffer = frame.buffer
+
         when (method) {
             METHOD_GET_FRAME_META -> {
-                val frame = ZestoFrameBridge.consumeLatestFrame()
                 result.putLong(KEY_FRAME_ID, frame.frameId)
                 result.putInt(KEY_WIDTH, frame.width)
                 result.putInt(KEY_HEIGHT, frame.height)
                 result.putLong(KEY_TIMESTAMP_US, frame.timestampUs)
                 result.putString(KEY_FORMAT, frame.format.name)
+                result.putInt(KEY_BUFFER_SIZE, buffer?.size ?: 0)
+                result.putString(KEY_HEALTH_STATE, health.name)
+                result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
             }
             METHOD_IS_STREAMING -> {
-                val frame = ZestoFrameBridge.latestFrame.value
-                val isRecent = (System.nanoTime() / 1000 - frame.timestampUs) < 1_000_000 // Within 1s
-                result.putBoolean(KEY_IS_STREAMING, frame.frameId > 0 && isRecent)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
+            }
+            METHOD_GET_HEALTH_STATE -> {
+                result.putString(KEY_HEALTH_STATE, health.name)
+                result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
             }
         }
         return result
     }
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
-        val context = context ?: return null
         val frame = ZestoFrameBridge.consumeLatestFrame()
         val buffer = frame.buffer ?: return null
 
-        val cacheFile = File(context.cacheDir, "latest_frame.bin")
-        FileOutputStream(cacheFile).use { it.write(buffer) }
-        return ParcelFileDescriptor.open(cacheFile, ParcelFileDescriptor.MODE_READ_ONLY)
+        val pipe = ParcelFileDescriptor.createPipe()
+        val readSide = pipe[0]
+        val writeSide = pipe[1]
+
+        pipeExecutor.execute {
+            try {
+                FileOutputStream(writeSide.fileDescriptor).use { output ->
+                    output.write(buffer)
+                    output.flush()
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    writeSide.close()
+                } catch (_: Exception) {}
+            }
+        }
+
+        return readSide
     }
 
     override fun getType(uri: Uri): String = "application/octet-stream"
@@ -82,3 +131,4 @@ class ZestoFrameContentProvider : ContentProvider() {
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 }
+

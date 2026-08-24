@@ -81,7 +81,7 @@ fun PreviewScreen(
                 .testTag("stream_preview_box"),
             contentAlignment = Alignment.Center
         ) {
-            if (isLiveVideoActive && uiState.player != null) {
+            if (isLiveVideoActive) {
                 // Real Live Video Rendering via Hardware-Accelerated PlayerView
                 AndroidView(
                     factory = { context ->

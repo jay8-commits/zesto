@@ -43,7 +43,7 @@ class ZestoFrameContentProvider : ContentProvider() {
     ): Cursor {
         val cursor = MatrixCursor(arrayOf(KEY_FRAME_ID, KEY_WIDTH, KEY_HEIGHT, KEY_TIMESTAMP_US, KEY_FORMAT))
         val frame = ZestoFrameBridge.consumeLatestFrame()
-        cursor.addRow(arrayOf(frame.frameId, frame.width, frame.height, frame.timestampUs, frame.format.name))
+        cursor.addRow(arrayOf<Any>(frame.frameId, frame.width, frame.height, frame.timestampUs, frame.format.name))
         return cursor
     }
 

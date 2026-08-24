@@ -167,20 +167,42 @@ class ControlledCameraTestActivity : ComponentActivity() {
             val builder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder?.addTarget(surface)
 
-            cameraDevice?.createCaptureSession(
-                listOf(surface),
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        if (cameraDevice == null) return
-                        captureSession = session
-                        builder?.let {
-                            session.setRepeatingRequest(it.build(), null, backgroundHandler)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                val outputConfig = android.hardware.camera2.params.OutputConfiguration(surface)
+                val executor = java.util.concurrent.Executor { command -> backgroundHandler?.post(command) }
+                val sessionConfig = android.hardware.camera2.params.SessionConfiguration(
+                    android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR,
+                    listOf(outputConfig),
+                    executor,
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            if (cameraDevice == null) return
+                            captureSession = session
+                            builder?.let {
+                                session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                            }
                         }
+                        override fun onConfigureFailed(session: CameraCaptureSession) {}
                     }
-                    override fun onConfigureFailed(session: CameraCaptureSession) {}
-                },
-                backgroundHandler
-            )
+                )
+                cameraDevice?.createCaptureSession(sessionConfig)
+            } else {
+                @Suppress("DEPRECATION")
+                cameraDevice?.createCaptureSession(
+                    listOf(surface),
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            if (cameraDevice == null) return
+                            captureSession = session
+                            builder?.let {
+                                session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                            }
+                        }
+                        override fun onConfigureFailed(session: CameraCaptureSession) {}
+                    },
+                    backgroundHandler
+                )
+            }
         } catch (_: Exception) {}
     }
 

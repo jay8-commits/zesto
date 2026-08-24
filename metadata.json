@@ -1,0 +1,6 @@
+{
+  "name": "Zesto",
+  "description": "Modular Android video-input and camera-virtualization framework.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

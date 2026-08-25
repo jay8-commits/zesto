@@ -46,6 +46,7 @@ class RTSPPlayerEngine(
     private val scope: CoroutineScope =
         CoroutineScope(Dispatchers.Main.immediate)
 ) {
+    var diagnosticsManager: com.example.zesto.diagnostics.DiagnosticsManager? = null
 
     private var exoPlayer: ExoPlayer? = null
     private var surfaceTexture: SurfaceTexture? = null
@@ -172,6 +173,48 @@ class RTSPPlayerEngine(
             playerInstance.addListener(
                 object : Player.Listener {
 
+                    override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                        for (group in tracks.groups) {
+                            if (group.type == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
+                                for (i in 0 until group.length) {
+                                    if (group.isTrackSelected(i)) {
+                                        val format = group.getTrackFormat(i)
+                                        val mime = format.sampleMimeType ?: "video/avc"
+                                        val codec = format.codecs ?: "unknown"
+                                        val w = format.width
+                                        val h = format.height
+                                        val fps = format.frameRate
+                                        val bitrate = format.bitrate
+
+                                        if (w > 0) currentVideoWidth = w
+                                        if (h > 0) currentVideoHeight = h
+
+                                        diagnosticsManager?.logger?.info(
+                                            com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                            "[VIDEO_TRACK_DETECTED] SDP Video Track Detected: MIME=$mime, Codec=$codec, Resolution=${w}x${h}@${fps}fps, Bitrate=$bitrate bps"
+                                        )
+                                        diagnosticsManager?.recordBoundaryStage(
+                                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED
+                                        )
+
+                                        _decoderState.value = DecoderState.Configured(
+                                            mimeType = mime,
+                                            width = if (w > 0) w else 1280,
+                                            height = if (h > 0) h else 720
+                                        )
+                                        _decoderStats.update {
+                                            it.copy(
+                                                width = if (w > 0) w else it.width,
+                                                height = if (h > 0) h else it.height,
+                                                pixelFormat = mime
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     override fun onPlaybackStateChanged(
                         playbackState: Int
                     ) {
@@ -196,11 +239,16 @@ class RTSPPlayerEngine(
                                         StreamState.Connecting
                                 }
 
+                                diagnosticsManager?.logger?.info(
+                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                    "RTSP DESCRIBE & SETUP complete. Buffering RTP packet stream..."
+                                )
+
                                 _decoderState.value =
                                     DecoderState.Configured(
                                         "video/avc",
-                                        currentVideoWidth,
-                                        currentVideoHeight
+                                        if (currentVideoWidth > 0) currentVideoWidth else 1280,
+                                        if (currentVideoHeight > 0) currentVideoHeight else 720
                                     )
                             }
 
@@ -212,6 +260,14 @@ class RTSPPlayerEngine(
                                     StreamState.Connected(url)
 
                                 reconnectAttempts = 0
+
+                                diagnosticsManager?.logger?.info(
+                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                    "[RTSP_CONNECTED] RTSP connection established and RTP media stream active: $url"
+                                )
+                                diagnosticsManager?.recordBoundaryStage(
+                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                                )
                             }
 
                             Player.STATE_ENDED -> {
@@ -220,6 +276,11 @@ class RTSPPlayerEngine(
 
                                 _decoderState.value =
                                     DecoderState.Stopped
+
+                                diagnosticsManager?.logger?.info(
+                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                    "RTSP stream ended by remote source"
+                                )
                             }
                         }
                     }
@@ -258,6 +319,11 @@ class RTSPPlayerEngine(
                                         videoSize.height
                                 )
                             }
+
+                            diagnosticsManager?.logger?.info(
+                                com.example.zesto.diagnostics.Subsystem.DECODER,
+                                "Video dimensions updated from stream: ${videoSize.width}x${videoSize.height}"
+                            )
                         }
                     }
 
@@ -267,8 +333,17 @@ class RTSPPlayerEngine(
 
                         val count = renderedFramesCount.incrementAndGet()
                         framesSinceLastFps++
-                        val width = if (currentVideoWidth > 0) currentVideoWidth else 854
-                        val height = if (currentVideoHeight > 0) currentVideoHeight else 480
+                        val width = if (currentVideoWidth > 0) currentVideoWidth else 1280
+                        val height = if (currentVideoHeight > 0) currentVideoHeight else 720
+
+                        diagnosticsManager?.logger?.info(
+                            com.example.zesto.diagnostics.Subsystem.DECODER,
+                            "[VIDEO_FRAME_DECODED] First video frame decoded and rendered to surface (${width}x${height})"
+                        )
+                        diagnosticsManager?.recordBoundaryStage(
+                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED
+                        )
+
                         val frame = VideoFrame(
                             frameNumber = count,
                             timestampUs = System.nanoTime() / 1000L,
@@ -293,6 +368,12 @@ class RTSPPlayerEngine(
                                     decodeErrorCount.get()
                             )
                         }
+
+                        diagnosticsManager?.logger?.error(
+                            com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                            "RTSP Playback Error [${error.errorCodeName} / ${error.errorCode}]: $message",
+                            error.stackTraceToString()
+                        )
 
                         handlePlaybackFailure(
                             message,
@@ -341,6 +422,14 @@ class RTSPPlayerEngine(
                                     decoderName
                             )
                         }
+
+                        diagnosticsManager?.logger?.info(
+                            com.example.zesto.diagnostics.Subsystem.DECODER,
+                            "[DECODER_INITIALIZED] Video decoder initialized: $decoderNameParam (took ${initializationDurationMs}ms)"
+                        )
+                        diagnosticsManager?.recordBoundaryStage(
+                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.DECODER_INITIALIZED
+                        )
                     }
 
                     override fun onVideoFrameProcessingOffset(
@@ -348,27 +437,7 @@ class RTSPPlayerEngine(
                         totalProcessingOffsetUs: Long,
                         frameCount: Int
                     ) {
-                        if (frameCount <= 0) {
-                            return
-                        }
-
-                        renderedFramesCount.addAndGet(
-                            frameCount.toLong()
-                        )
-
-                        framesSinceLastFps +=
-                            frameCount
-
-                        val width = if (currentVideoWidth > 0) currentVideoWidth else 854
-                        val height = if (currentVideoHeight > 0) currentVideoHeight else 480
-                        val frame = VideoFrame(
-                            frameNumber = renderedFramesCount.get(),
-                            timestampUs = System.nanoTime() / 1000L,
-                            width = width,
-                            height = height,
-                            pixelFormat = PixelFormat.SURFACE_TEXTURE
-                        )
-                        frameListener?.invoke(frame)
+                        // Diagnostic telemetry only; do not fabricate frames here
                     }
                 }
             )
@@ -439,6 +508,14 @@ class RTSPPlayerEngine(
             val forceTcp =
                 config.protocol ==
                     TransportProtocol.RTSP_TCP
+
+            val transportModeStr =
+                if (forceTcp) "RTP/AVP/TCP (Interleaved)" else "RTP/AVP/UDP (Unicast)"
+
+            diagnosticsManager?.logger?.info(
+                com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                "Connecting to RTSP URL: ${config.url} [Transport: $transportModeStr, Timeout: ${config.connectionTimeoutMs}ms]"
+            )
 
             val mediaItem =
                 MediaItem.fromUri(config.url)

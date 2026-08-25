@@ -27,7 +27,9 @@ class DiagnosticsManager(
         }
         logger.info(
             when (stage) {
-                BoundaryDiagnosticStage.RTSP_CONNECTED -> Subsystem.TRANSPORT
+                BoundaryDiagnosticStage.RTSP_CONNECTED,
+                BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED -> Subsystem.TRANSPORT
+                BoundaryDiagnosticStage.DECODER_INITIALIZED,
                 BoundaryDiagnosticStage.VIDEO_FRAME_DECODED -> Subsystem.DECODER
                 BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED -> Subsystem.FRAME_PIPELINE
                 BoundaryDiagnosticStage.TARGET_PROCESS_ATTACHED -> Subsystem.TARGET_COMPATIBILITY

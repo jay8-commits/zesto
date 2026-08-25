@@ -34,10 +34,12 @@ data class DiagnosticsEvent(
 )
 
 /**
- * Eight explicit boundary diagnostic stages for end-to-end RTSP to Camera virtualization pipeline.
+ * Explicit boundary diagnostic stages for end-to-end RTSP to Camera virtualization pipeline.
  */
 enum class BoundaryDiagnosticStage(val code: String, val description: String) {
     RTSP_CONNECTED("RTSP_CONNECTED", "Transport connected to RTSP source stream"),
+    VIDEO_TRACK_DETECTED("VIDEO_TRACK_DETECTED", "SDP video track identified with MIME type and resolution"),
+    DECODER_INITIALIZED("DECODER_INITIALIZED", "Video decoder configured and initialized"),
     VIDEO_FRAME_DECODED("VIDEO_FRAME_DECODED", "Hardware/software decoder yielded video frame"),
     FRAME_BRIDGE_POSTED("FRAME_BRIDGE_POSTED", "Decoded frame committed to shared ZestoFrameBridge"),
     TARGET_PROCESS_ATTACHED("TARGET_PROCESS_ATTACHED", "Zesto hook attached to target application process"),

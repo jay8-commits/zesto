@@ -239,42 +239,6 @@ class ZestoStreamingService : Service() {
             framePipeline.pushFrame(frame)
         }
 
-        videoDecoder.configure(
-            width = 1280,
-            height = 720
-        )
-
-        videoDecoder.setDecodeListener(
-            object : FrameDecodeListener {
-
-                override fun onFrameDecoded(
-                    frame: VideoFrame
-                ) {
-                    framePipeline.pushFrame(
-                        frame
-                    )
-
-                    ZestoFrameBridge.postFrame(
-                        width = frame.width,
-                        height = frame.height,
-                        format = frame.pixelFormat,
-                        buffer = frame.buffer?.array(),
-                        bitmap = frame.bitmap,
-                        timestampUs = frame.timestampUs
-                    )
-                }
-
-                override fun onDecodeError(
-                    error: String,
-                    cause: Throwable?
-                ) {
-                    // Decode errors are reported by the decoder.
-                }
-            }
-        )
-
-        videoDecoder.start()
-
         framePipeline.start()
 
         observePlayerState()
@@ -445,13 +409,6 @@ class ZestoStreamingService : Service() {
         _globalServiceState.value =
             ServiceRuntimeState.SERVICE_RUNNING
 
-        videoDecoder.configure(
-            width = config.targetWidth,
-            height = config.targetHeight
-        )
-
-        videoDecoder.start()
-
         framePipeline.start()
 
         playerEngine.startStream(
@@ -464,8 +421,6 @@ class ZestoStreamingService : Service() {
         _isRunning.value = false
 
         playerEngine.stopStream()
-
-        videoDecoder.stop()
 
         framePipeline.stop()
 

@@ -127,6 +127,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         activeBackend = defaultBackend
         defaultBackend?.let { framePipeline.registerConsumer(it) }
 
+        rtspPlayerEngine.diagnosticsManager = diagnosticsManager
+
         diagnosticsManager.updateCameraDetection(
             cameraCaps.apiType,
             cameraCaps.hardwareLevel
@@ -490,18 +492,11 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 "Initiating real RTSP stream from ${config.url}"
             )
 
+            framePipeline.start()
+
             rtspPlayerEngine.startStream(
                 config
             )
-
-            videoDecoder.configure(
-                width = config.targetWidth,
-                height = config.targetHeight
-            )
-
-            videoDecoder.start()
-
-            framePipeline.start()
 
             _uiState.update {
                 it.copy(
@@ -543,22 +538,15 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
             diagnosticsManager.logger.info(
                 Subsystem.DECODER,
-                "Starting hardware decoder at " +
+                "Starting hardware decoder and stream ingestion at " +
                     "${config.targetWidth}x${config.targetHeight}"
             )
+
+            framePipeline.start()
 
             rtspPlayerEngine.startStream(
                 config
             )
-
-            videoDecoder.configure(
-                width = config.targetWidth,
-                height = config.targetHeight
-            )
-
-            videoDecoder.start()
-
-            framePipeline.start()
 
             _uiState.update {
                 it.copy(
@@ -579,8 +567,6 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
 
             rtspPlayerEngine.stopStream()
-
-            videoDecoder.stop()
 
             framePipeline.stop()
 

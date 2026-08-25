@@ -216,6 +216,36 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun testFrameBridgeHealthStates() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        assertEquals(com.example.zesto.frame.FrameHealthState.NO_FRAME, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState())
+        assertEquals(-1L, com.example.zesto.frame.ZestoFrameBridge.getMillisecondsSinceLastFrame())
+
+        // Post a frame
+        com.example.zesto.frame.ZestoFrameBridge.postFrame(
+            width = 1280,
+            height = 720,
+            format = PixelFormat.RGBA_8888,
+            timestampUs = 1000000L
+        )
+
+        assertEquals(1L, com.example.zesto.frame.ZestoFrameBridge.totalFramesReceived)
+        assertEquals(com.example.zesto.frame.FrameHealthState.FRAME_ACTIVE, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState(stalledTimeoutMs = 5000L))
+        assertTrue(com.example.zesto.frame.ZestoFrameBridge.getMillisecondsSinceLastFrame() >= 0L)
+    }
+
+    @Test
+    fun testServiceRuntimeStates() {
+        val states = com.example.zesto.service.ServiceRuntimeState.values()
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_STARTED))
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_RUNNING))
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_STOPPED))
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.STREAM_ACTIVE_IN_BACKGROUND))
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.STREAM_INTERRUPTED))
+        assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.STREAM_RECONNECTED))
+    }
+
+    @Test
     fun testPhysicalVerificationRequiredMarkers() {
         // Explicitly assert that physical device testing is marked as required
         val requiresPhysicalOnDevice = true

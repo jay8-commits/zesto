@@ -33,26 +33,34 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
+          cache-disabled: true
 
       - name: Generate Gradle Wrapper
         run: |
           gradle wrapper --gradle-version 9.3.1
           chmod +x gradlew
-          ./gradlew --version
+          ./gradlew --version --no-configuration-cache
 
       - name: Clean Project
         run: |
-          ./gradlew clean --no-daemon --stacktrace
+          ./gradlew clean --no-daemon --no-configuration-cache --stacktrace
 
       - name: Run Unit Tests
         continue-on-error: true
         run: |
-          ./gradlew testDebugUnitTest --no-daemon --stacktrace
+          ./gradlew testDebugUnitTest \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
 
       - name: Build Debug APK
         id: build_apk
         run: |
-          ./gradlew assembleDebug --no-daemon --stacktrace --info
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace \
+            --info
 
       - name: Verify Debug APK
         run: |

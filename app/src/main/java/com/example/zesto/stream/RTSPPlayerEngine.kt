@@ -88,15 +88,6 @@ class RTSPPlayerEngine(
 
     private var reconnectAttempts = 0
 
-    /*
-     * IMPORTANT:
-     *
-     * onRenderedFirstFrame() is NOT a frame counter.
-     * It fires for the first rendered frame of a playback period.
-     *
-     * We therefore count rendered frames using AnalyticsListener's
-     * onVideoFrameProcessingOffset() callback where available.
-     */
     private val renderedFramesCount =
         AtomicLong(0L)
 
@@ -172,10 +163,6 @@ class RTSPPlayerEngine(
                                         StreamState.Connecting
                                 }
 
-                                /*
-                                 * Do not claim that the decoder is running
-                                 * merely because ExoPlayer is buffering.
-                                 */
                                 _decoderState.value =
                                     DecoderState.Configured(
                                         "video/avc",
@@ -192,12 +179,6 @@ class RTSPPlayerEngine(
                                     StreamState.Connected(url)
 
                                 reconnectAttempts = 0
-
-                                /*
-                                 * READY means the player is prepared.
-                                 * Actual video rendering is confirmed
-                                 * separately by AnalyticsListener.
-                                 */
                             }
 
                             Player.STATE_ENDED -> {
@@ -234,22 +215,16 @@ class RTSPPlayerEngine(
 
                             _decoderStats.update {
                                 it.copy(
-                                    width = videoSize.width,
-                                    height = videoSize.height
+                                    width =
+                                        videoSize.width,
+                                    height =
+                                        videoSize.height
                                 )
                             }
                         }
                     }
 
                     override fun onRenderedFirstFrame() {
-                        /*
-                         * This confirms that at least one actual video
-                         * frame reached the renderer.
-                         *
-                         * Do NOT increment renderedFramesCount here,
-                         * because this callback is only the first-frame
-                         * notification.
-                         */
                         _decoderState.value =
                             DecoderState.Running
                     }
@@ -318,12 +293,6 @@ class RTSPPlayerEngine(
                         }
                     }
 
-                    /*
-                     * Media3 reports the amount of video frame processing
-                     * work through this callback. It is useful as a real
-                     * indication that video frames are reaching the video
-                     * renderer.
-                     */
                     override fun onVideoFrameProcessingOffset(
                         eventTime: AnalyticsListener.EventTime,
                         totalProcessingOffsetUs: Long,
@@ -403,11 +372,6 @@ class RTSPPlayerEngine(
             StreamState.Connecting
 
         try {
-            /*
-             * Stop the previous playback period before replacing
-             * the MediaSource. This prevents stale RTSP sessions
-             * during reconnects.
-             */
             playerInstance.stop()
             playerInstance.clearMediaItems()
 
@@ -484,7 +448,7 @@ class RTSPPlayerEngine(
                 (
                     config.reconnectDelayMs *
                         backoffMultiplier
-                ).coerceAtMost(15_000L)
+                    ).coerceAtMost(15_000L)
 
             reconnectJob?.cancel()
 
@@ -525,16 +489,6 @@ class RTSPPlayerEngine(
         error: PlaybackException
     ): String {
 
-        /*
-         * Do not use:
-         *
-         * generateSequence<Throwable?>(error) { it.cause }
-         *
-         * because the Kotlin version used by this project rejects
-         * the nullable generic type.
-         *
-         * Use a normal Throwable chain instead.
-         */
         val causes =
             mutableListOf<String>()
 
@@ -542,6 +496,7 @@ class RTSPPlayerEngine(
             error
 
         while (current != null) {
+
             causes.add(
                 "${current::class.java.simpleName}: ${current.message}"
             )
@@ -573,8 +528,12 @@ class RTSPPlayerEngine(
         statsMonitorJob?.cancel()
         statsMonitorJob = null
 
-        exoPlayer?.stop()
-        exoPlayer?.clearMediaItems()
+        try {
+            exoPlayer?.stop()
+            exoPlayer?.clearMediaItems()
+        } catch (_: Exception) {
+            // Player may already have been released.
+        }
 
         _streamState.value =
             StreamState.Disconnected
@@ -615,7 +574,7 @@ class RTSPPlayerEngine(
                 (
                     framesSinceLastFps *
                         1_000.0
-                ) / elapsed
+                    ) / elapsed
             } else {
                 0.0
             }
@@ -678,15 +637,6 @@ class RTSPPlayerEngine(
             )
         }
 
-        /*
-         * This is intentionally NOT called "packetsReceived".
-         *
-         * Media3's public ExoPlayer API does not provide a reliable
-         * RTP-packet counter here.
-         *
-         * framesReceived represents actual video frames processed
-         * by the video renderer.
-         */
         _streamStats.update { current ->
 
             current.copy(
@@ -697,4 +647,69 @@ class RTSPPlayerEngine(
                     reconnectAttempts,
 
                 networkLatencyMs =
-          
+                    0L,
+
+                lastPacketTimestamp =
+                    if (isActuallyPlaying) {
+                        now
+                    } else {
+                        0L
+                    }
+            )
+        }
+    }
+
+    /**
+     * Fully releases the ExoPlayer and cancels all internal jobs.
+     *
+     * This method is required by ZestoStreamingService and
+     * ZestoViewModel during lifecycle cleanup.
+     */
+    fun release() {
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        statsMonitorJob?.cancel()
+        statsMonitorJob = null
+
+        try {
+            exoPlayer?.stop()
+        } catch (_: Exception) {
+        }
+
+        try {
+            exoPlayer?.clearMediaItems()
+        } catch (_: Exception) {
+        }
+
+        try {
+            exoPlayer?.release()
+        } catch (_: Exception) {
+        }
+
+        exoPlayer = null
+        activeConfig = null
+
+        renderedFramesCount.set(0L)
+        droppedFramesCount.set(0L)
+        decodeErrorCount.set(0L)
+
+        framesSinceLastFps = 0L
+        currentVideoWidth = 0
+        currentVideoHeight = 0
+        decoderName = "Unknown"
+
+        _streamState.value =
+            StreamState.Disconnected
+
+        _decoderState.value =
+            DecoderState.Uninitialized
+
+        _decoderStats.value =
+            DecoderStats()
+
+        _streamStats.value =
+            StreamStats()
+    }
+}

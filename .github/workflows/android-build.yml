@@ -2,9 +2,13 @@ name: Android Build & Test
 
 on:
   push:
-    branches: ["main", "master"]
+    branches:
+      - main
+      - master
   pull_request:
-    branches: ["main", "master"]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 permissions:
@@ -12,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & Verify Zesto
+    name: Build and Verify Zesto
     runs-on: ubuntu-latest
 
     steps:
@@ -22,106 +26,76 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
+          distribution: temurin
           java-version: "17"
-          distribution: "temurin"
-          cache: "gradle"
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle Environment
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
-          cache-disabled: true
+      - name: Make Gradle Wrapper Executable
+        run: chmod +x ./gradlew
 
-      - name: Generate Gradle Wrapper
-        run: |
-          gradle wrapper --gradle-version 9.3.1
-          chmod +x gradlew
-          ./gradlew --version --no-configuration-cache
+      - name: Show Gradle Version
+        run: ./gradlew --version
 
-      - name: Clean Project
-        run: |
-          ./gradlew clean --no-daemon --no-configuration-cache --stacktrace
+      - name: Clean
+        run: ./gradlew clean --no-daemon --no-configuration-cache --stacktrace
 
       - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --no-daemon --no-configuration-cache --stacktrace
         continue-on-error: true
-        run: |
-          ./gradlew testDebugUnitTest \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace
 
       - name: Build Debug APK
-        id: build_apk
-        run: |
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --no-configuration-cache \
-            --stacktrace \
-            --info
+        run: ./gradlew assembleDebug --no-daemon --no-configuration-cache --stacktrace
 
-      - name: Verify Debug APK
+      - name: Verify APK
         run: |
           echo "=== APK OUTPUT ==="
-          ls -lah app/build/outputs/apk/debug/
+          find app/build/outputs -type f -name "*.apk" -print
 
-          APK="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          APK=$(find app/build/outputs -type f -name "*.apk" -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Debug APK was not generated."
+            echo "ERROR: No APK was generated."
             exit 1
           fi
 
           echo "APK FOUND:"
           echo "$APK"
 
-      - name: Prepare Zesto Module Package
+      - name: Prepare Zesto Package
         run: |
-          mkdir -p build/module-package
+          mkdir -p build/zesto-package
 
-          APK="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          APK=$(find app/build/outputs -type f -name "*.apk" -print -quit)
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK not found."
-            exit 1
-          fi
+          cp "$APK" build/zesto-package/zesto-debug.apk
 
-          cp "$APK" build/module-package/zesto-streaming-service.apk
-          cp "$APK" build/module-package/zesto-lspatch-module.apk
-
-          cat > build/module-package/README.txt <<'EOF'
-Zesto Camera Virtualization Module Package
+          cat > build/zesto-package/README.txt <<'EOF'
+Zesto Camera Virtualization Project
 
 Application ID:
 com.aistudio.zesto.vcam
 
 Debug APK:
-zesto-streaming-service.apk
+zesto-debug.apk
 
-Module APK:
-zesto-lspatch-module.apk
-
-Important:
-The APK and module package are the same debug APK.
-Physical LSPatch/LSPosed camera interception still requires
-verification on the target Android device.
+This package contains the APK produced by the Gradle build.
 EOF
 
-      - name: Upload Zesto Debug APK
+      - name: Upload Zesto APK
         uses: actions/upload-artifact@v4
         with:
           name: zesto-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: build/zesto-package/zesto-debug.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload Zesto Module
+      - name: Upload Zesto Package
         uses: actions/upload-artifact@v4
         with:
-          name: zesto-module
-          path: build/module-package/*
+          name: zesto-package
+          path: build/zesto-package/
           if-no-files-found: error
           retention-days: 14
 
@@ -132,9 +106,9 @@ EOF
           echo "ZESTO BUILD SUMMARY"
           echo "======================================"
 
-          if [ -d app/build/outputs/apk/debug ]; then
-            echo "APK directory exists."
-            ls -lah app/build/outputs/apk/debug/
+          if [ -d app/build/outputs ]; then
+            echo "Build output directory:"
+            find app/build/outputs -maxdepth 4 -type f -print
           else
-            echo "APK directory does not exist."
+            echo "No build output directory found."
           fi

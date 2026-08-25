@@ -32,14 +32,27 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Make Gradle Wrapper Executable
-        shell: bash
-        run: chmod +x ./gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+          cache-disabled: true
+
+      - name: Generate Gradle Wrapper
+        run: |
+          gradle wrapper --gradle-version 9.3.1
+          chmod +x ./gradlew
+
+      - name: Verify Gradle Wrapper
+        run: |
+          echo "=== GRADLE WRAPPER ==="
+          ls -lah gradle/wrapper/
+          test -f gradle/wrapper/gradle-wrapper.jar
+          ./gradlew --version --no-daemon --no-configuration-cache
 
       - name: Show Project Structure
-        shell: bash
         run: |
-          echo "=== PROJECT ROOT ==="
+          echo "=== PROJECT ==="
           ls -la
 
           echo "=== GRADLE FILES ==="
@@ -50,32 +63,38 @@ jobs:
             -name "settings.gradle.kts" \
           \) -print
 
-      - name: Show Gradle Version
-        run: ./gradlew --version
-
       - name: Clean Project
-        run: ./gradlew clean --no-daemon --no-configuration-cache --stacktrace
+        run: |
+          ./gradlew clean \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
 
       - name: Run Unit Tests
         continue-on-error: true
-        run: ./gradlew testDebugUnitTest --no-daemon --no-configuration-cache --stacktrace
+        run: |
+          ./gradlew testDebugUnitTest \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --no-configuration-cache --stacktrace
+        run: |
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
 
-      - name: Find Generated APK
-        shell: bash
+      - name: Find APK
         run: |
           echo "=== GENERATED APK FILES ==="
-
           find . \
             -type f \
             -name "*.apk" \
             -not -path "./.gradle/*" \
             -print
 
-      - name: Verify APK Exists
-        shell: bash
+      - name: Verify APK
         run: |
           APK=$(find . \
             -type f \
@@ -91,7 +110,7 @@ jobs:
           echo "APK FOUND:"
           echo "$APK"
 
-      - name: Upload Debug APK
+      - name: Upload Zesto APK
         uses: actions/upload-artifact@v4
         with:
           name: zesto-debug-apk
@@ -102,7 +121,6 @@ jobs:
 
       - name: Build Summary
         if: always()
-        shell: bash
         run: |
           echo "======================================"
           echo "ZESTO BUILD SUMMARY"

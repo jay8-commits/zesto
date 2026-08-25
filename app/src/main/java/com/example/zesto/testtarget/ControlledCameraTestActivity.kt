@@ -246,6 +246,10 @@ fun ControlledCameraTestScreen(
     var msSinceLastFrame by remember { mutableLongStateOf(-1L) }
     var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
 
+    var physicalFramesRendered by remember { mutableLongStateOf(0L) }
+    var lastPhysicalFpsTimestamp by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var physicalFpsCounter by remember { mutableLongStateOf(0L) }
+
     // Virtual frame rendering loop
     LaunchedEffect(isVirtualInjectionActive, textureViewRef) {
         val tv = textureViewRef
@@ -257,12 +261,23 @@ fun ControlledCameraTestScreen(
                 isAntiAlias = true
             }
 
+            var lastVirtualFpsTimestamp = System.currentTimeMillis()
+            var virtualFramesInSecond = 0L
+
             while (isActive) {
                 val frame = ZestoFrameBridge.consumeLatestFrame()
                 healthState = ZestoFrameBridge.getFrameHealthState()
                 msSinceLastFrame = ZestoFrameBridge.getMillisecondsSinceLastFrame()
                 frameCount = ZestoFrameBridge.totalFramesDelivered
                 droppedFrames = ZestoFrameBridge.totalFramesDropped
+
+                val now = System.currentTimeMillis()
+                if (now - lastVirtualFpsTimestamp >= 1000L) {
+                    val elapsed = now - lastVirtualFpsTimestamp
+                    measuredFps = if (elapsed > 0) (virtualFramesInSecond * 1000.0) / elapsed else 0.0
+                    virtualFramesInSecond = 0L
+                    lastVirtualFpsTimestamp = now
+                }
 
                 if (tv.isAvailable) {
                     val canvas: Canvas? = tv.lockCanvas()
@@ -272,40 +287,35 @@ fun ControlledCameraTestScreen(
                                 val srcRect = Rect(0, 0, frame.bitmap.width, frame.bitmap.height)
                                 val dstRect = Rect(0, 0, canvas.width, canvas.height)
                                 canvas.drawBitmap(frame.bitmap, srcRect, dstRect, paint)
-                                measuredFps = 30.0
+                                virtualFramesInSecond++
                                 activeResolution = "${frame.width} x ${frame.height}"
                             } else {
                                 canvas.drawColor(AndroidColor.rgb(15, 23, 42))
                                 canvas.drawText("ZESTO VIRTUAL CAMERA INJECTION", 40f, 80f, textPaint)
                                 if (healthState == FrameHealthState.NO_FRAME) {
-                                    canvas.drawText("STATUS: NO FRAME (STREAM IDLE)", 40f, 130f, textPaint)
+                                    canvas.drawText("STATUS: NO FRAME (AWAITING RTSP FEED)", 40f, 130f, textPaint)
+                                    canvas.drawText("Start Zesto streaming service with valid RTSP URL", 40f, 180f, textPaint)
                                 } else {
                                     canvas.drawText("STATUS: ${healthState.name}", 40f, 130f, textPaint)
-                                    canvas.drawText("Frame #$frameCount", 40f, 180f, textPaint)
+                                    canvas.drawText("Delivered Frames: $frameCount", 40f, 180f, textPaint)
                                 }
-                                measuredFps = if (healthState == FrameHealthState.FRAME_ACTIVE) 30.0 else 0.0
                             }
                         } finally {
                             tv.unlockCanvasAndPost(canvas)
                         }
                     }
                 }
-                delay(33L) // ~30 FPS loop
+                delay(33L) // Polling interval
             }
         }
     }
 
-    // Physical camera monitoring loop
-    LaunchedEffect(isVirtualInjectionActive) {
+    // Physical camera monitoring loop: sync state and update FPS cleanly
+    LaunchedEffect(isVirtualInjectionActive, physicalFramesRendered) {
         if (!isVirtualInjectionActive) {
-            while (isActive) {
-                delay(1000L)
-                frameCount += 30L
-                measuredFps = 30.0
-                activeResolution = "1280 x 720"
-                healthState = FrameHealthState.FRAME_ACTIVE
-                msSinceLastFrame = 33L
-            }
+            frameCount = physicalFramesRendered
+            healthState = if (physicalFramesRendered > 0) FrameHealthState.FRAME_ACTIVE else FrameHealthState.NO_FRAME
+            activeResolution = "1280 x 720"
         }
     }
 
@@ -384,7 +394,19 @@ fun ControlledCameraTestScreen(
                                         stopCamera()
                                         return true
                                     }
-                                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+                                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                                        if (!isVirtualInjectionActive) {
+                                            physicalFramesRendered++
+                                            physicalFpsCounter++
+                                            val now = System.currentTimeMillis()
+                                            val elapsed = now - lastPhysicalFpsTimestamp
+                                            if (elapsed >= 1000L) {
+                                                measuredFps = (physicalFpsCounter * 1000.0) / elapsed
+                                                physicalFpsCounter = 0L
+                                                lastPhysicalFpsTimestamp = now
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         },

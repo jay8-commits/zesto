@@ -139,7 +139,7 @@ class ExampleUnitTest {
     @Test
     fun testZestoFrameBridgeSingleton() {
         com.example.zesto.frame.ZestoFrameBridge.reset()
-        assertEquals(0L, com.example.zesto.frame.ZestoFrameBridge.frameCount.value)
+        assertEquals(0L, com.example.zesto.frame.ZestoFrameBridge.totalFramesReceived)
 
         com.example.zesto.frame.ZestoFrameBridge.postFrame(
             width = 1920,
@@ -148,12 +148,12 @@ class ExampleUnitTest {
             timestampUs = 123456L
         )
 
-        assertEquals(1L, com.example.zesto.frame.ZestoFrameBridge.frameCount.value)
+        assertEquals(1L, com.example.zesto.frame.ZestoFrameBridge.totalFramesReceived)
         val latest = com.example.zesto.frame.ZestoFrameBridge.latestFrame.value
         assertNotNull(latest)
         assertEquals(1920, latest?.width)
         assertEquals(1080, latest?.height)
-        assertEquals(PixelFormat.RGBA_8888, latest?.pixelFormat)
+        assertEquals(PixelFormat.RGBA_8888, latest?.format)
     }
 
     @Test
@@ -250,6 +250,69 @@ class ExampleUnitTest {
         // Explicitly assert that physical device testing is marked as required
         val requiresPhysicalOnDevice = true
         assertTrue("PHYSICAL TEST REQUIRED: Live camera frame injection into target processes requires on-device validation", requiresPhysicalOnDevice)
+    }
+
+    @Test
+    fun testFrameHealthStateTransitions() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        assertEquals(com.example.zesto.frame.FrameHealthState.NO_FRAME, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState())
+
+        // Post a frame
+        com.example.zesto.frame.ZestoFrameBridge.postFrame(
+            width = 1280,
+            height = 720,
+            format = PixelFormat.RGBA_8888,
+            timestampUs = 1000L
+        )
+        // With large timeout -> ACTIVE
+        assertEquals(com.example.zesto.frame.FrameHealthState.FRAME_ACTIVE, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState(stalledTimeoutMs = 10000L))
+
+        // With zero timeout -> STALLED (since at least 0ms has elapsed)
+        Thread.sleep(5)
+        assertEquals(com.example.zesto.frame.FrameHealthState.FRAME_STALLED, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState(stalledTimeoutMs = 1L))
+    }
+
+    @Test
+    fun testHookStatusDistinctions() {
+        // Assert that virtualization backends default to truthful status
+        val camera2Backend = com.example.zesto.camera.Camera2Backend()
+        assertEquals(CameraVirtualizationStatus.NOT_TESTED, camera2Backend.status.value)
+
+        val cameraXBackend = com.example.zesto.camera.CameraXIntegration()
+        assertEquals(CameraVirtualizationStatus.REQUIRES_INSTRUMENTATION, cameraXBackend.status.value)
+
+        val legacyBackend = com.example.zesto.camera.LegacyCameraBackend()
+        assertEquals(CameraVirtualizationStatus.REQUIRES_INSTRUMENTATION, legacyBackend.status.value)
+    }
+
+    @Test
+    fun testDecoderStateLifecycle() {
+        val decoder = com.example.zesto.decoder.HardwareVideoDecoder()
+        assertEquals(com.example.zesto.decoder.DecoderState.Uninitialized, decoder.state.value)
+
+        val configResult = decoder.configure(width = 1920, height = 1080)
+        assertTrue(configResult.isSuccess)
+        assertTrue(decoder.state.value is com.example.zesto.decoder.DecoderState.Configured)
+
+        val startResult = decoder.start()
+        assertTrue(startResult.isSuccess)
+        assertEquals(com.example.zesto.decoder.DecoderState.Running, decoder.state.value)
+
+        decoder.stop()
+        assertEquals(com.example.zesto.decoder.DecoderState.Stopped, decoder.state.value)
+    }
+
+    @Test
+    fun testTruthfulTelemetryNoFakeBitrateWhenDisconnected() {
+        val decStats = com.example.zesto.decoder.DecoderStats()
+        assertEquals(0.0, decStats.fps, 0.001)
+        assertEquals(0L, decStats.decodedFrameCount)
+        assertEquals(0L, decStats.droppedFrameCount)
+
+        val streamStats = com.example.zesto.stream.StreamStats()
+        assertEquals(0.0, streamStats.estimatedBitrateKbps, 0.001)
+        assertEquals(0L, streamStats.networkLatencyMs)
+        assertEquals(0L, streamStats.framesReceived)
     }
 }
 

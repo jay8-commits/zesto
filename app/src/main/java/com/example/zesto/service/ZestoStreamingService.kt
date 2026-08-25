@@ -109,14 +109,6 @@ class ZestoStreamingService : Service() {
     val runtimeState: StateFlow<ServiceRuntimeState> = _runtimeState.asStateFlow()
 
     private var activeConfig: StreamConfig = StreamConfig()
-    private var framePostingJob: Job? = null
-    private var testBitmap: Bitmap? = null
-    private var testCanvas: Canvas? = null
-    private val paint = Paint().apply {
-        color = Color.CYAN
-        textSize = 28f
-        isAntiAlias = true
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -133,6 +125,8 @@ class ZestoStreamingService : Service() {
                     width = frame.width,
                     height = frame.height,
                     format = frame.pixelFormat,
+                    buffer = frame.buffer?.array(),
+                    bitmap = null,
                     timestampUs = frame.timestampUs
                 )
             }
@@ -203,53 +197,17 @@ class ZestoStreamingService : Service() {
         _isRunning.value = true
         _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
         _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
+        videoDecoder.configure(width = config.targetWidth, height = config.targetHeight)
+        videoDecoder.start()
+        framePipeline.start()
         playerEngine.startStream(config)
-
-        framePostingJob?.cancel()
-        framePostingJob = serviceScope.launch(Dispatchers.Default) {
-            var counter = 0L
-            val width = config.targetWidth
-            val height = config.targetHeight
-
-            // Prepare reusable bitmap buffer to avoid allocations
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            val textPaint = Paint().apply {
-                color = Color.WHITE
-                textSize = 32f
-                isAntiAlias = true
-            }
-
-            while (_isRunning.value) {
-                kotlinx.coroutines.delay(33L) // ~30 FPS frame dispatch into IPC bridge
-                if (playerEngine.streamState.value is StreamState.Connected) {
-                    counter++
-                    // Draw live frame stamp
-                    canvas.drawColor(Color.rgb(18, 24, 38))
-                    canvas.drawText("ZESTO OBS STREAM - ${config.url}", 40f, 60f, textPaint)
-                    canvas.drawText("Frame #$counter @ 30 FPS", 40f, 110f, textPaint)
-
-                    val byteBuffer = ByteBuffer.allocate(width * height * 4)
-                    bmp.copyPixelsToBuffer(byteBuffer)
-
-                    ZestoFrameBridge.postFrame(
-                        width = width,
-                        height = height,
-                        format = PixelFormat.RGBA_8888,
-                        buffer = byteBuffer.array(),
-                        bitmap = bmp,
-                        timestampUs = System.nanoTime() / 1000
-                    )
-                }
-            }
-        }
     }
 
     private fun stopPipelineInternal() {
         _isRunning.value = false
-        framePostingJob?.cancel()
-        framePostingJob = null
         playerEngine.stopStream()
+        videoDecoder.stop()
+        framePipeline.stop()
         ZestoFrameBridge.reset()
     }
 

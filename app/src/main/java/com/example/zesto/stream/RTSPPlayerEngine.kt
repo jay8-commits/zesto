@@ -258,41 +258,35 @@ class RTSPPlayerEngine(
         val elapsed = now - lastFpsTimestamp
         val playerInstance = exoPlayer
 
-        if (playerInstance != null && playerInstance.isPlaying) {
-            renderedFramesCount.addAndGet(15L) // Sample frame progression during active playback
-            framesSinceLastFps += 15L
-        }
-
         if (elapsed >= 1000L) {
             val fps = if (elapsed > 0) (framesSinceLastFps * 1000.0) / elapsed else 0.0
             framesSinceLastFps = 0L
             lastFpsTimestamp = now
 
             val isStreaming = _streamState.value is StreamState.Connected
-            val simulatedBitrate = if (isStreaming) 2500.0 + (Math.random() * 200 - 100) else 0.0
+            val rendered = renderedFramesCount.get()
+            val dropped = droppedFramesCount.get()
+            val errors = decodeErrorCount.get()
 
             _decoderStats.update { current ->
                 current.copy(
                     width = currentVideoWidth,
                     height = currentVideoHeight,
-                    fps = if (isStreaming) fps.coerceAtLeast(0.0) else 0.0,
-                    decodedFrameCount = renderedFramesCount.get(),
-                    droppedFrameCount = droppedFramesCount.get(),
-                    decodeErrors = decodeErrorCount.get(),
-                    averageDecodeLatencyMs = if (isStreaming) 28L else 0L,
-                    lastFrameTimestampUs = System.nanoTime() / 1000
+                    fps = if (isStreaming && rendered > 0) fps.coerceAtLeast(0.0) else 0.0,
+                    decodedFrameCount = rendered,
+                    droppedFrameCount = dropped,
+                    decodeErrors = errors,
+                    averageDecodeLatencyMs = 0L,
+                    lastFrameTimestampUs = if (rendered > 0) System.nanoTime() / 1000 else 0L
                 )
             }
 
             _streamStats.update { current ->
                 current.copy(
-                    bytesReceived = current.bytesReceived + (if (isStreaming) (simulatedBitrate * 1000 / 8).toLong() else 0L),
-                    packetsReceived = current.packetsReceived + (if (isStreaming) 30L else 0L),
-                    framesReceived = renderedFramesCount.get(),
-                    estimatedBitrateKbps = simulatedBitrate,
+                    framesReceived = rendered,
                     reconnectCount = reconnectAttempts,
-                    networkLatencyMs = if (isStreaming) 24L else 0L,
-                    lastPacketTimestamp = now
+                    networkLatencyMs = 0L,
+                    lastPacketTimestamp = if (isStreaming) now else 0L
                 )
             }
         }

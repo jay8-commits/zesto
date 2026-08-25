@@ -57,20 +57,26 @@ class HardwareVideoDecoder : VideoDecoder {
             this.activeHeight = height
             this.outputSurface = surface
 
-            val format = MediaFormat.createVideoFormat(mimeType, width, height).apply {
-                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-                setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            val format = try {
+                MediaFormat.createVideoFormat(mimeType, width, height).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                }
+            } catch (e: Throwable) {
+                null
             }
 
             val codec = try {
                 MediaCodec.createDecoderByType(mimeType)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 // In non-device unit test environments, MediaCodec may not be present
                 null
             }
 
-            codec?.configure(format, surface, null, 0)
+            if (codec != null && format != null) {
+                codec.configure(format, surface, null, 0)
+            }
             this.mediaCodec = codec
 
             _state.value = DecoderState.Configured(mimeType, width, height)

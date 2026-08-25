@@ -2,6 +2,7 @@ package com.example
 
 import com.example.zesto.camera.CameraApiType
 import com.example.zesto.camera.CameraVirtualizationStatus
+import com.example.zesto.diagnostics.BoundaryDiagnosticStage
 import com.example.zesto.diagnostics.DiagnosticsLevel
 import com.example.zesto.diagnostics.DiagnosticsManager
 import com.example.zesto.diagnostics.LogExporter
@@ -11,6 +12,8 @@ import com.example.zesto.frame.FramePipeline
 import com.example.zesto.frame.FrameProvider
 import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
+import com.example.zesto.hook.Camera2Hook
+import com.example.zesto.hook.ZestoXposedInit
 import com.example.zesto.stream.StreamConfig
 import com.example.zesto.stream.StreamState
 import com.example.zesto.stream.StreamStats
@@ -111,10 +114,12 @@ class ExampleUnitTest {
             "rtsp://192.168.1.50:8554/live"
         )
         manager.logger.info(Subsystem.TRANSPORT, "Transport connection validated")
+        manager.recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
 
         val snapshot = manager.snapshot.value
         assertEquals("CONNECTED", snapshot.transportStatus)
         assertEquals("rtsp://192.168.1.50:8554/live", snapshot.rtspUrl)
+        assertTrue(snapshot.activeBoundaries.contains(BoundaryDiagnosticStage.RTSP_CONNECTED))
 
         val logs = manager.logger.logs.value
         assertTrue(logs.isNotEmpty())
@@ -123,6 +128,45 @@ class ExampleUnitTest {
         assertTrue(exportedMarkdown.contains("ZESTO DIAGNOSTICS LOG EXPORT"))
         assertTrue(exportedMarkdown.contains("--- TRANSPORT LAYER ---"))
         assertTrue(exportedMarkdown.contains("CONNECTED"))
+        assertTrue(exportedMarkdown.contains("[X] RTSP_CONNECTED"))
+    }
+
+    @Test
+    fun testEightBoundaryDiagnosticStagesDefined() {
+        val stages = BoundaryDiagnosticStage.entries
+        assertEquals(8, stages.size)
+        val expectedCodes = listOf(
+            "RTSP_CONNECTED",
+            "VIDEO_FRAME_DECODED",
+            "FRAME_BRIDGE_POSTED",
+            "TARGET_PROCESS_ATTACHED",
+            "CAMERA2_HOOK_INSTALLED",
+            "CAMERA2_DEVICE_OPEN_INTERCEPTED",
+            "FRAME_SUBSTITUTION_ACTIVE",
+            "TARGET_PREVIEW_RECEIVED_FRAME"
+        )
+        stages.forEachIndexed { index, stage ->
+            assertEquals(expectedCodes[index], stage.code)
+        }
+    }
+
+    @Test
+    fun testCamera2HookLifecycleHarness() {
+        val classLoader = this.javaClass.classLoader ?: ClassLoader.getSystemClassLoader()
+        Camera2Hook.attachHook(classLoader)
+        assertEquals(Camera2Hook.HookStatus.HOOK_REGISTERED, Camera2Hook.status)
+
+        Camera2Hook.onCameraDeviceOpening("0")
+        assertEquals(Camera2Hook.HookStatus.CAMERA2_DEVICE_OPEN_INTERCEPTED, Camera2Hook.status)
+
+        Camera2Hook.stopFramePump()
+    }
+
+    @Test
+    fun testZestoXposedInitModuleTag() {
+        val init = ZestoXposedInit()
+        assertNotNull(init)
+        assertEquals("ZestoXposedHook", ZestoXposedInit.MODULE_TAG)
     }
 
     @Test
@@ -151,9 +195,9 @@ class ExampleUnitTest {
         assertEquals(1L, com.example.zesto.frame.ZestoFrameBridge.totalFramesReceived)
         val latest = com.example.zesto.frame.ZestoFrameBridge.latestFrame.value
         assertNotNull(latest)
-        assertEquals(1920, latest?.width)
-        assertEquals(1080, latest?.height)
-        assertEquals(PixelFormat.RGBA_8888, latest?.format)
+        assertEquals(1920, latest.width)
+        assertEquals(1080, latest.height)
+        assertEquals(PixelFormat.RGBA_8888, latest.format)
     }
 
     @Test
@@ -236,7 +280,7 @@ class ExampleUnitTest {
 
     @Test
     fun testServiceRuntimeStates() {
-        val states = com.example.zesto.service.ServiceRuntimeState.values()
+        val states = com.example.zesto.service.ServiceRuntimeState.entries
         assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_STARTED))
         assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_RUNNING))
         assertTrue(states.contains(com.example.zesto.service.ServiceRuntimeState.SERVICE_STOPPED))
@@ -351,5 +395,3 @@ class ExampleUnitTest {
         camera2Backend.release()
     }
 }
-
-

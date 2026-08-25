@@ -1,6 +1,7 @@
 package com.example.zesto.frame
 
 import android.graphics.Bitmap
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,6 +21,7 @@ enum class FrameHealthState {
  * background service, IPC content provider, and camera virtualization hooks.
  */
 object ZestoFrameBridge {
+    private const val TAG = "ZestoFrameBridge"
 
     data class FrameData(
         val frameId: Long = 0L,
@@ -69,6 +71,9 @@ object ZestoFrameBridge {
             buffer = buffer,
             bitmap = bitmap
         )
+        if (id == 1L || id % 60L == 0L) {
+            Log.i(TAG, "[FRAME_BRIDGE_POSTED] Frame #$id (${width}x${height}, format=$format) posted to shared frame bridge.")
+        }
     }
 
     /**
@@ -112,4 +117,3 @@ object ZestoFrameBridge {
         _latestFrame.value = FrameData()
     }
 }
-

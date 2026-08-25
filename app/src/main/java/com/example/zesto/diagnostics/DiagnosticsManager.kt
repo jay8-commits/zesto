@@ -21,6 +21,25 @@ class DiagnosticsManager(
     private val _snapshot = MutableStateFlow(DiagnosticsSnapshot())
     val snapshot: StateFlow<DiagnosticsSnapshot> = _snapshot.asStateFlow()
 
+    fun recordBoundaryStage(stage: BoundaryDiagnosticStage) {
+        _snapshot.update { current ->
+            current.copy(activeBoundaries = current.activeBoundaries + stage)
+        }
+        logger.info(
+            when (stage) {
+                BoundaryDiagnosticStage.RTSP_CONNECTED -> Subsystem.TRANSPORT
+                BoundaryDiagnosticStage.VIDEO_FRAME_DECODED -> Subsystem.DECODER
+                BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED -> Subsystem.FRAME_PIPELINE
+                BoundaryDiagnosticStage.TARGET_PROCESS_ATTACHED -> Subsystem.TARGET_COMPATIBILITY
+                BoundaryDiagnosticStage.CAMERA2_HOOK_INSTALLED,
+                BoundaryDiagnosticStage.CAMERA2_DEVICE_OPEN_INTERCEPTED,
+                BoundaryDiagnosticStage.FRAME_SUBSTITUTION_ACTIVE,
+                BoundaryDiagnosticStage.TARGET_PREVIEW_RECEIVED_FRAME -> Subsystem.VIRTUALIZATION
+            },
+            "[${stage.code}] ${stage.description}"
+        )
+    }
+
     fun updateTransport(state: StreamState, stats: StreamStats, url: String) {
         val statusStr = when (state) {
             is StreamState.Connected -> "CONNECTED"
@@ -28,6 +47,10 @@ class DiagnosticsManager(
             is StreamState.Reconnecting -> "RECONNECTING (${state.attempt}/${state.maxAttempts})"
             is StreamState.Disconnected -> "DISCONNECTED"
             is StreamState.Error -> "ERROR: ${state.message}"
+        }
+
+        if (state is StreamState.Connected) {
+            recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
         }
 
         val fault = if (state is StreamState.Error) Subsystem.TRANSPORT else null
@@ -59,6 +82,10 @@ class DiagnosticsManager(
             is DecoderState.Error -> "ERROR: ${state.message}"
         }
 
+        if (stats.decodedFrameCount > 0) {
+            recordBoundaryStage(BoundaryDiagnosticStage.VIDEO_FRAME_DECODED)
+        }
+
         val fault = if (state is DecoderState.Error) Subsystem.DECODER else null
 
         _snapshot.update { current ->
@@ -77,6 +104,10 @@ class DiagnosticsManager(
 
     fun updatePipeline(stats: FramePipelineStats) {
         val statusStr = if (stats.isRunning) "ACTIVE" else "IDLE"
+
+        if (stats.deliveredFrames > 0) {
+            recordBoundaryStage(BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED)
+        }
 
         _snapshot.update { current ->
             current.copy(

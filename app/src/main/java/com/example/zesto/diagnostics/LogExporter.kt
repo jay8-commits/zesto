@@ -63,6 +63,14 @@ object LogExporter {
         sb.appendLine("Target Status: ${snapshot.targetStatus}")
         sb.appendLine()
 
+        sb.appendLine("--- PIPELINE BOUNDARY MILESTONES ---")
+        BoundaryDiagnosticStage.entries.forEach { stage ->
+            val achieved = snapshot.activeBoundaries.contains(stage)
+            val mark = if (achieved) "[X]" else "[ ]"
+            sb.appendLine("$mark ${stage.code}: ${stage.description}")
+        }
+        sb.appendLine()
+
         if (snapshot.faultSubsystem != null) {
             sb.appendLine("--- ACTIVE FAULT IDENTIFICATION ---")
             sb.appendLine("Faulting Subsystem: ${snapshot.faultSubsystem.name}")

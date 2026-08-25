@@ -34,6 +34,20 @@ data class DiagnosticsEvent(
 )
 
 /**
+ * Eight explicit boundary diagnostic stages for end-to-end RTSP to Camera virtualization pipeline.
+ */
+enum class BoundaryDiagnosticStage(val code: String, val description: String) {
+    RTSP_CONNECTED("RTSP_CONNECTED", "Transport connected to RTSP source stream"),
+    VIDEO_FRAME_DECODED("VIDEO_FRAME_DECODED", "Hardware/software decoder yielded video frame"),
+    FRAME_BRIDGE_POSTED("FRAME_BRIDGE_POSTED", "Decoded frame committed to shared ZestoFrameBridge"),
+    TARGET_PROCESS_ATTACHED("TARGET_PROCESS_ATTACHED", "Zesto hook attached to target application process"),
+    CAMERA2_HOOK_INSTALLED("CAMERA2_HOOK_INSTALLED", "Camera2 API reflection/bytecode hook active"),
+    CAMERA2_DEVICE_OPEN_INTERCEPTED("CAMERA2_DEVICE_OPEN_INTERCEPTED", "Target openCamera call intercepted"),
+    FRAME_SUBSTITUTION_ACTIVE("FRAME_SUBSTITUTION_ACTIVE", "Frame pump rendering OBS frames onto target surface"),
+    TARGET_PREVIEW_RECEIVED_FRAME("TARGET_PREVIEW_RECEIVED_FRAME", "Target view received and displayed injected frame")
+}
+
+/**
  * Complete system-wide diagnostics snapshot covering all six architectural layers.
  */
 data class DiagnosticsSnapshot(
@@ -80,8 +94,10 @@ data class DiagnosticsSnapshot(
     val targetPackage: String = "com.example.zesto.testtarget",
     val targetStatus: String = "CONFIGURED",
 
+    // Boundary Milestones Active Tracking
+    val activeBoundaries: Set<BoundaryDiagnosticStage> = emptySet(),
+
     // Active Fault Identification
     val faultSubsystem: Subsystem? = null,
     val lastErrorMessage: String? = null
 )
-

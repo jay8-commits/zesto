@@ -10,8 +10,8 @@ import android.util.Log
  */
 enum class XposedHookLifecycle {
     MODULE_LOADED,
-    TARGET_PROCESS_DETECTED,
-    HOOK_REGISTERED,
+    TARGET_PROCESS_ATTACHED,
+    CAMERA2_HOOK_INSTALLED,
     CAMERA_API_DETECTED,
     FRAME_SOURCE_CONNECTED,
     VIRTUAL_CAMERA_ACTIVE,
@@ -23,7 +23,7 @@ enum class XposedHookLifecycle {
  * Compatible with LSPosed (Root) and LSPatch / NPatch (Non-Root APK patching).
  *
  * Implements the standard Xposed Framework hook contract to intercept target camera sessions
- * and inject the real-time OBS stream from ZestoFrameContentProvider.
+ * and inject the real-time OBS stream from ZestoFrameContentProvider / ZestoFrameBridge.
  */
 class ZestoXposedInit {
 
@@ -51,15 +51,15 @@ class ZestoXposedInit {
             val classLoader = classLoaderField.get(lpparam) as? ClassLoader ?: return
 
             if (shouldHookPackage(packageName)) {
-                currentLifecycle = XposedHookLifecycle.TARGET_PROCESS_DETECTED
-                Log.i(MODULE_TAG, "[TARGET_PROCESS_DETECTED] Intercepting target process: $packageName")
+                currentLifecycle = XposedHookLifecycle.TARGET_PROCESS_ATTACHED
+                Log.i(MODULE_TAG, "[TARGET_PROCESS_ATTACHED] Target process identified and attached: $packageName")
 
                 hookCamera2Pipeline(classLoader)
                 hookLegacyCameraPipeline(classLoader)
                 hookCameraXPipeline(classLoader)
 
-                currentLifecycle = XposedHookLifecycle.HOOK_REGISTERED
-                Log.i(MODULE_TAG, "[HOOK_REGISTERED] Virtualization hooks registered for: $packageName")
+                currentLifecycle = XposedHookLifecycle.CAMERA2_HOOK_INSTALLED
+                Log.i(MODULE_TAG, "[CAMERA2_HOOK_INSTALLED] Virtualization hooks registered for package: $packageName")
             }
         } catch (e: Throwable) {
             currentLifecycle = XposedHookLifecycle.HOOK_FAILED
@@ -112,4 +112,3 @@ object ZestoRemoteFrameReceiver {
         }
     }
 }
-

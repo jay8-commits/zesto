@@ -15,6 +15,7 @@ import android.hardware.camera2.CameraManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.ComponentActivity
@@ -90,6 +91,7 @@ import com.example.ui.theme.ElegantDarkTextSecondary
 import com.example.ui.theme.ZestoTheme
 import com.example.zesto.frame.FrameHealthState
 import com.example.zesto.frame.ZestoFrameBridge
+import com.example.zesto.hook.Camera2Hook
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -102,6 +104,10 @@ import kotlinx.coroutines.withContext
  */
 class ControlledCameraTestActivity : ComponentActivity() {
 
+    companion object {
+        private const val TAG = "ControlledCameraTest"
+    }
+
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var backgroundThread: HandlerThread? = null
@@ -110,6 +116,11 @@ class ControlledCameraTestActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        Log.i(TAG, "[TARGET_PROCESS_ATTACHED] Test target process initialized: ${packageName}")
+
+        // Attach Camera2 hook to classloader
+        Camera2Hook.attachHook(classLoader)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 101)
@@ -150,6 +161,9 @@ class ControlledCameraTestActivity : ComponentActivity() {
                 return
             }
 
+            // Signal Camera2 device opening boundary
+            Camera2Hook.onCameraDeviceOpening(cameraId)
+
             manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     cameraDevice = camera
@@ -171,6 +185,9 @@ class ControlledCameraTestActivity : ComponentActivity() {
         val texture = textureView.surfaceTexture ?: return
         texture.setDefaultBufferSize(1280, 720)
         val surface = Surface(texture)
+
+        // Signal session configured to Camera2Hook
+        Camera2Hook.onSessionConfigured(listOf(surface))
 
         try {
             val builder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
@@ -220,6 +237,7 @@ class ControlledCameraTestActivity : ComponentActivity() {
         captureSession = null
         cameraDevice?.close()
         cameraDevice = null
+        Camera2Hook.stopFramePump()
     }
 
     override fun onDestroy() {
@@ -596,4 +614,3 @@ fun ControlledCameraTestScreen(
         }
     }
 }
-

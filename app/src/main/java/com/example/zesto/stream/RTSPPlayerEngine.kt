@@ -44,7 +44,8 @@ import java.util.concurrent.atomic.AtomicLong
 @OptIn(UnstableApi::class)
 class RTSPPlayerEngine(
     private val context: Context,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main.immediate)
+    private val scope: CoroutineScope =
+        CoroutineScope(Dispatchers.Main.immediate)
 ) {
 
     private var exoPlayer: ExoPlayer? = null
@@ -53,7 +54,9 @@ class RTSPPlayerEngine(
         get() = exoPlayer
 
     private val _streamState =
-        MutableStateFlow<StreamState>(StreamState.Disconnected)
+        MutableStateFlow<StreamState>(
+            StreamState.Disconnected
+        )
 
     val streamState: StateFlow<StreamState> =
         _streamState.asStateFlow()
@@ -65,7 +68,9 @@ class RTSPPlayerEngine(
         _streamStats.asStateFlow()
 
     private val _decoderState =
-        MutableStateFlow<DecoderState>(DecoderState.Uninitialized)
+        MutableStateFlow<DecoderState>(
+            DecoderState.Uninitialized
+        )
 
     val decoderState: StateFlow<DecoderState> =
         _decoderState.asStateFlow()
@@ -130,7 +135,8 @@ class RTSPPlayerEngine(
                 DefaultRenderersFactory(context)
                     .setEnableDecoderFallback(true)
                     .setExtensionRendererMode(
-                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                        DefaultRenderersFactory
+                            .EXTENSION_RENDERER_MODE_PREFER
                     )
 
             val playerInstance =
@@ -148,14 +154,20 @@ class RTSPPlayerEngine(
                         when (playbackState) {
 
                             Player.STATE_IDLE -> {
-                                if (_streamState.value is StreamState.Connected) {
+                                if (
+                                    _streamState.value
+                                        is StreamState.Connected
+                                ) {
                                     _streamState.value =
                                         StreamState.Disconnected
                                 }
                             }
 
                             Player.STATE_BUFFERING -> {
-                                if (_streamState.value !is StreamState.Reconnecting) {
+                                if (
+                                    _streamState.value
+                                        !is StreamState.Reconnecting
+                                ) {
                                     _streamState.value =
                                         StreamState.Connecting
                                 }
@@ -472,7 +484,7 @@ class RTSPPlayerEngine(
                 (
                     config.reconnectDelayMs *
                         backoffMultiplier
-                    ).coerceAtMost(15_000L)
+                ).coerceAtMost(15_000L)
 
             reconnectJob?.cancel()
 
@@ -513,16 +525,30 @@ class RTSPPlayerEngine(
         error: PlaybackException
     ): String {
 
-        val cause =
-            generateSequence<Throwable?>(
-                error
-            ) { it.cause }
-                .filterNotNull()
-                .joinToString(
-                    separator = " → "
-                ) {
-                    "${it::class.java.simpleName}: ${it.message}"
-                }
+        /*
+         * Do not use:
+         *
+         * generateSequence<Throwable?>(error) { it.cause }
+         *
+         * because the Kotlin version used by this project rejects
+         * the nullable generic type.
+         *
+         * Use a normal Throwable chain instead.
+         */
+        val causes =
+            mutableListOf<String>()
+
+        var current: Throwable? =
+            error
+
+        while (current != null) {
+            causes.add(
+                "${current::class.java.simpleName}: ${current.message}"
+            )
+
+            current =
+                current.cause
+        }
 
         return buildString {
 
@@ -531,9 +557,11 @@ class RTSPPlayerEngine(
                     ?: "RTSP playback error"
             )
 
-            if (cause.isNotBlank()) {
+            if (causes.isNotEmpty()) {
                 append(" | Cause chain: ")
-                append(cause)
+                append(
+                    causes.joinToString(" → ")
+                )
             }
         }
     }
@@ -587,7 +615,7 @@ class RTSPPlayerEngine(
                 (
                     framesSinceLastFps *
                         1_000.0
-                    ) / elapsed
+                ) / elapsed
             } else {
                 0.0
             }
@@ -669,27 +697,4 @@ class RTSPPlayerEngine(
                     reconnectAttempts,
 
                 networkLatencyMs =
-                    0L,
-
-                lastPacketTimestamp =
-                    if (isActuallyPlaying) {
-                        now
-                    } else {
-                        0L
-                    }
-            )
-        }
-    }
-
-    fun release() {
-
-        stopStream()
-
-        exoPlayer?.release()
-
-        exoPlayer = null
-
-        _decoderState.value =
-            DecoderState.Uninitialized
-    }
-}
+          

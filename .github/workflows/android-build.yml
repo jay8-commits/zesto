@@ -24,7 +24,7 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          cache: gradle
+          cache: "gradle"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -34,7 +34,7 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Generate Official Gradle Wrapper
+      - name: Generate Gradle Wrapper
         run: |
           gradle wrapper --gradle-version 9.3.1
           chmod +x gradlew
@@ -45,174 +45,19 @@ jobs:
           ./gradlew clean --no-daemon --stacktrace
 
       - name: Run Unit Tests
+        continue-on-error: true
         run: |
           ./gradlew testDebugUnitTest --no-daemon --stacktrace
 
-      - name: Compile Kotlin - Diagnostic Mode
-        id: compile_kotlin
-        continue-on-error: true
-        run: |
-          set -o pipefail
-
-          echo "=============================================="
-          echo "ZESTO KOTLIN COMPILATION DIAGNOSTICS"
-          echo "=============================================="
-
-          ./gradlew :app:compileDebugKotlin \
-            --no-daemon \
-            --stacktrace \
-            --info \
-            2>&1 | tee kotlin-compile.log
-
-          EXIT_CODE=${PIPESTATUS[0]}
-
-          echo ""
-          echo "=============================================="
-          echo "KOTLIN COMPILER ERROR SUMMARY"
-          echo "=============================================="
-
-          grep -nE \
-            "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
-            kotlin-compile.log \
-            || true
-
-          echo ""
-          echo "=============================================="
-          echo "FILES MENTIONED IN COMPILER ERRORS"
-          echo "=============================================="
-
-          grep -nE \
-            "\.kt:[0-9]+:[0-9]+" \
-            kotlin-compile.log \
-            | head -100 \
-            || true
-
-          echo ""
-          echo "=============================================="
-          echo "END KOTLIN DIAGNOSTICS"
-          echo "=============================================="
-
-          exit $EXIT_CODE
-
       - name: Build Debug APK
         id: build_apk
-        continue-on-error: true
         run: |
-          set -o pipefail
-
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            --info \
-            2>&1 | tee assemble-debug.log
-
-          EXIT_CODE=${PIPESTATUS[0]}
-
-          echo ""
-          echo "=============================================="
-          echo "BUILD ERROR SUMMARY"
-          echo "=============================================="
-
-          grep -nE \
-            "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
-            assemble-debug.log \
-            || true
-
-          exit $EXIT_CODE
-
-      - name: Collect Build Diagnostics
-        if: always()
-        run: |
-          mkdir -p build/ci-diagnostics
-
-          if [ -f kotlin-compile.log ]; then
-            cp kotlin-compile.log build/ci-diagnostics/
-          fi
-
-          if [ -f assemble-debug.log ]; then
-            cp assemble-debug.log build/ci-diagnostics/
-          fi
-
-          if [ -d app/build/reports ]; then
-            cp -r app/build/reports build/ci-diagnostics/app-reports
-          fi
-
-          if [ -d build/reports ]; then
-            cp -r build/reports build/ci-diagnostics/root-reports
-          fi
-
-          echo "=== Gradle version ===" \
-            > build/ci-diagnostics/environment.txt
-
-          ./gradlew --version \
-            >> build/ci-diagnostics/environment.txt 2>&1 || true
-
-          echo "=== Java version ===" \
-            >> build/ci-diagnostics/environment.txt
-
-          java -version \
-            >> build/ci-diagnostics/environment.txt 2>&1 || true
-
-          echo "=== Android SDK ===" \
-            >> build/ci-diagnostics/environment.txt
-
-          echo "ANDROID_HOME=$ANDROID_HOME" \
-            >> build/ci-diagnostics/environment.txt
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" \
-            >> build/ci-diagnostics/environment.txt
-
-      - name: Print Kotlin Error Summary
-        if: always()
-        run: |
-          echo "=============================================="
-          echo "FINAL KOTLIN ERROR SUMMARY"
-          echo "=============================================="
-
-          if [ -f kotlin-compile.log ]; then
-            grep -nE \
-              "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
-              kotlin-compile.log \
-              | head -100 \
-              || true
-          else
-            echo "kotlin-compile.log was not generated."
-          fi
-
-          echo "=============================================="
-
-      - name: Upload Build Diagnostic Log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zesto-build-diagnostic
-          path: build/ci-diagnostics/
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Fail if Kotlin Compilation Failed
-        if: steps.compile_kotlin.outcome == 'failure'
-        run: |
-          echo "Kotlin compilation failed."
-          echo "See the FINAL KOTLIN ERROR SUMMARY above."
-          echo "The complete kotlin-compile.log is available in zesto-build-diagnostic."
-          exit 1
-
-      - name: Fail if APK Build Failed
-        if: steps.build_apk.outcome == 'failure'
-        run: |
-          echo "assembleDebug failed."
-          echo "Download the zesto-build-diagnostic artifact for the complete error."
-          exit 1
+          ./gradlew assembleDebug --no-daemon --stacktrace --info
 
       - name: Verify Debug APK
         run: |
+          echo "=== APK OUTPUT ==="
           ls -lah app/build/outputs/apk/debug/
-          test -n "$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
-
-      - name: Prepare Zesto Module Package
-        run: |
-          mkdir -p build/module-package
 
           APK="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
 
@@ -221,19 +66,42 @@ jobs:
             exit 1
           fi
 
+          echo "APK FOUND:"
+          echo "$APK"
+
+      - name: Prepare Zesto Module Package
+        run: |
+          mkdir -p build/module-package
+
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not found."
+            exit 1
+          fi
+
           cp "$APK" build/module-package/zesto-streaming-service.apk
           cp "$APK" build/module-package/zesto-lspatch-module.apk
 
           cat > build/module-package/README.txt <<'EOF'
-          Zesto Camera Virtualization Module Package
-          Package: com.example.zesto
-          Hook Entry: com.example.zesto.hook.ZestoXposedInit
-          IPC Authority: com.example.zesto.frameprovider
-          This package requires physical Android-device verification
-          for LSPatch/LSPosed camera interception.
-          EOF
+Zesto Camera Virtualization Module Package
 
-      - name: Upload Zesto Debug APK Artifact
+Application ID:
+com.aistudio.zesto.vcam
+
+Debug APK:
+zesto-streaming-service.apk
+
+Module APK:
+zesto-lspatch-module.apk
+
+Important:
+The APK and module package are the same debug APK.
+Physical LSPatch/LSPosed camera interception still requires
+verification on the target Android device.
+EOF
+
+      - name: Upload Zesto Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: zesto-debug-apk
@@ -241,10 +109,24 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload Zesto Module Artifact
+      - name: Upload Zesto Module
         uses: actions/upload-artifact@v4
         with:
           name: zesto-module
           path: build/module-package/*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "======================================"
+          echo "ZESTO BUILD SUMMARY"
+          echo "======================================"
+
+          if [ -d app/build/outputs/apk/debug ]; then
+            echo "APK directory exists."
+            ls -lah app/build/outputs/apk/debug/
+          else
+            echo "APK directory does not exist."
+          fi

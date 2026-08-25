@@ -20,11 +20,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "17"
           distribution: "temurin"
-          cache: "gradle"
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -48,17 +48,86 @@ jobs:
         run: |
           ./gradlew testDebugUnitTest --no-daemon --stacktrace
 
+      - name: Compile Kotlin - Diagnostic Mode
+        id: compile_kotlin
+        continue-on-error: true
+        run: |
+          set -o pipefail
+
+          echo "=============================================="
+          echo "ZESTO KOTLIN COMPILATION DIAGNOSTICS"
+          echo "=============================================="
+
+          ./gradlew :app:compileDebugKotlin \
+            --no-daemon \
+            --stacktrace \
+            --info \
+            2>&1 | tee kotlin-compile.log
+
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          echo ""
+          echo "=============================================="
+          echo "KOTLIN COMPILER ERROR SUMMARY"
+          echo "=============================================="
+
+          grep -nE \
+            "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
+            kotlin-compile.log \
+            || true
+
+          echo ""
+          echo "=============================================="
+          echo "FILES MENTIONED IN COMPILER ERRORS"
+          echo "=============================================="
+
+          grep -nE \
+            "\.kt:[0-9]+:[0-9]+" \
+            kotlin-compile.log \
+            | head -100 \
+            || true
+
+          echo ""
+          echo "=============================================="
+          echo "END KOTLIN DIAGNOSTICS"
+          echo "=============================================="
+
+          exit $EXIT_CODE
+
       - name: Build Debug APK
         id: build_apk
         continue-on-error: true
         run: |
           set -o pipefail
-          ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee assemble-debug.log
+
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --info \
+            2>&1 | tee assemble-debug.log
+
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          echo ""
+          echo "=============================================="
+          echo "BUILD ERROR SUMMARY"
+          echo "=============================================="
+
+          grep -nE \
+            "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
+            assemble-debug.log \
+            || true
+
+          exit $EXIT_CODE
 
       - name: Collect Build Diagnostics
         if: always()
         run: |
           mkdir -p build/ci-diagnostics
+
+          if [ -f kotlin-compile.log ]; then
+            cp kotlin-compile.log build/ci-diagnostics/
+          fi
 
           if [ -f assemble-debug.log ]; then
             cp assemble-debug.log build/ci-diagnostics/
@@ -72,15 +141,45 @@ jobs:
             cp -r build/reports build/ci-diagnostics/root-reports
           fi
 
-          echo "=== Gradle version ===" > build/ci-diagnostics/environment.txt
-          ./gradlew --version >> build/ci-diagnostics/environment.txt 2>&1 || true
+          echo "=== Gradle version ===" \
+            > build/ci-diagnostics/environment.txt
 
-          echo "=== Java version ===" >> build/ci-diagnostics/environment.txt
-          java -version >> build/ci-diagnostics/environment.txt 2>&1 || true
+          ./gradlew --version \
+            >> build/ci-diagnostics/environment.txt 2>&1 || true
 
-          echo "=== Android SDK ===" >> build/ci-diagnostics/environment.txt
-          echo "ANDROID_HOME=$ANDROID_HOME" >> build/ci-diagnostics/environment.txt
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> build/ci-diagnostics/environment.txt
+          echo "=== Java version ===" \
+            >> build/ci-diagnostics/environment.txt
+
+          java -version \
+            >> build/ci-diagnostics/environment.txt 2>&1 || true
+
+          echo "=== Android SDK ===" \
+            >> build/ci-diagnostics/environment.txt
+
+          echo "ANDROID_HOME=$ANDROID_HOME" \
+            >> build/ci-diagnostics/environment.txt
+
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" \
+            >> build/ci-diagnostics/environment.txt
+
+      - name: Print Kotlin Error Summary
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "FINAL KOTLIN ERROR SUMMARY"
+          echo "=============================================="
+
+          if [ -f kotlin-compile.log ]; then
+            grep -nE \
+              "^(e:|error:|.*\.kt:[0-9]+:[0-9]+:|.*\.kt:[0-9]+:.*error)" \
+              kotlin-compile.log \
+              | head -100 \
+              || true
+          else
+            echo "kotlin-compile.log was not generated."
+          fi
+
+          echo "=============================================="
 
       - name: Upload Build Diagnostic Log
         if: always()
@@ -90,6 +189,14 @@ jobs:
           path: build/ci-diagnostics/
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Fail if Kotlin Compilation Failed
+        if: steps.compile_kotlin.outcome == 'failure'
+        run: |
+          echo "Kotlin compilation failed."
+          echo "See the FINAL KOTLIN ERROR SUMMARY above."
+          echo "The complete kotlin-compile.log is available in zesto-build-diagnostic."
+          exit 1
 
       - name: Fail if APK Build Failed
         if: steps.build_apk.outcome == 'failure'
@@ -119,11 +226,9 @@ jobs:
 
           cat > build/module-package/README.txt <<'EOF'
           Zesto Camera Virtualization Module Package
-
           Package: com.example.zesto
           Hook Entry: com.example.zesto.hook.ZestoXposedInit
           IPC Authority: com.example.zesto.frameprovider
-
           This package requires physical Android-device verification
           for LSPatch/LSPosed camera interception.
           EOF

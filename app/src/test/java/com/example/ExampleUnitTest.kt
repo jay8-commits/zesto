@@ -314,6 +314,42 @@ class ExampleUnitTest {
         assertEquals(0L, streamStats.networkLatencyMs)
         assertEquals(0L, streamStats.framesReceived)
     }
+
+    @Test
+    fun testRTSPFrameToFramePipelineToZestoFrameBridgeHandoff() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        val pipeline = FramePipeline()
+
+        val camera2Backend = com.example.zesto.camera.Camera2Backend()
+        pipeline.registerConsumer(camera2Backend)
+        assertEquals(1, pipeline.getActiveConsumerCount())
+
+        pipeline.start()
+        assertTrue(pipeline.isRunning())
+
+        val incomingFrame = VideoFrame(
+            frameNumber = 42L,
+            timestampUs = 987654321L,
+            width = 854,
+            height = 480,
+            pixelFormat = PixelFormat.SURFACE_TEXTURE
+        )
+
+        pipeline.pushFrame(incomingFrame)
+
+        assertEquals(1L, pipeline.stats.value.deliveredFrames)
+        assertEquals(1L, com.example.zesto.frame.ZestoFrameBridge.totalFramesReceived)
+
+        val latest = com.example.zesto.frame.ZestoFrameBridge.latestFrame.value
+        assertEquals(854, latest.width)
+        assertEquals(480, latest.height)
+        assertEquals(PixelFormat.SURFACE_TEXTURE, latest.format)
+        assertEquals(987654321L, latest.timestampUs)
+        assertEquals(com.example.zesto.frame.FrameHealthState.FRAME_ACTIVE, com.example.zesto.frame.ZestoFrameBridge.getFrameHealthState())
+
+        pipeline.stop()
+        camera2Backend.release()
+    }
 }
 
 

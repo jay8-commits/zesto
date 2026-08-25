@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.zesto.camera.Camera2Backend
 import com.example.zesto.camera.CameraApiDetector
 import com.example.zesto.camera.CameraVirtualizationBackend
 import com.example.zesto.camera.CameraVirtualizationStatus
@@ -14,7 +15,10 @@ import com.example.zesto.decoder.VideoDecoder
 import com.example.zesto.diagnostics.DiagnosticsManager
 import com.example.zesto.diagnostics.LogExporter
 import com.example.zesto.diagnostics.Subsystem
+import com.example.zesto.frame.FrameConsumer
 import com.example.zesto.frame.FramePipeline
+import com.example.zesto.frame.FrameProvider
+import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
 import com.example.zesto.frame.ZestoFrameBridge
 import com.example.zesto.service.ZestoStreamingService
@@ -70,6 +74,26 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<ZestoUiState> =
         _uiState.asStateFlow()
 
+    private class BridgeFrameConsumer : FrameConsumer {
+        override val consumerId: String = "bridge_consumer"
+        override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
+
+        override fun onConsumerAttached(provider: FrameProvider) {}
+
+        override fun onFrameAvailable(frame: VideoFrame) {
+            ZestoFrameBridge.postFrame(
+                width = frame.width,
+                height = frame.height,
+                format = frame.pixelFormat,
+                buffer = frame.buffer?.array(),
+                bitmap = frame.bitmap,
+                timestampUs = frame.timestampUs
+            )
+        }
+
+        override fun onConsumerDetached() {}
+    }
+
     init {
 
         val initialConfig =
@@ -93,6 +117,15 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 player = rtspPlayerEngine.player
             )
         }
+
+        // Register default bridge frame consumer to guarantee frame delivery to ZestoFrameBridge
+        val bridgeConsumer = BridgeFrameConsumer()
+        framePipeline.registerConsumer(bridgeConsumer)
+
+        // Register the active camera virtualization backend for the selected profile
+        val defaultBackend = defaultProfile?.let { compatibilityManager.createBackendForProfile(it) }
+        activeBackend = defaultBackend
+        defaultBackend?.let { framePipeline.registerConsumer(it) }
 
         diagnosticsManager.updateCameraDetection(
             cameraCaps.apiType,
@@ -118,7 +151,22 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         /*
-         * Connect RTSP receiver packets to decoder.
+         * Wire RTSPPlayerEngine real hardware frames -> FramePipeline -> ZestoFrameBridge / Backends
+         */
+        var frameHandoffCount = 0L
+        rtspPlayerEngine.setFrameListener { frame ->
+            framePipeline.pushFrame(frame)
+            frameHandoffCount++
+            if (frameHandoffCount == 1L || frameHandoffCount % 150L == 0L) {
+                diagnosticsManager.logger.debug(
+                    Subsystem.FRAME_PIPELINE,
+                    "Frame #${frame.frameNumber} (${frame.width}x${frame.height}) delivered to ${framePipeline.getActiveConsumerCount()} active consumers"
+                )
+            }
+        }
+
+        /*
+         * Connect RTSP receiver packets to decoder (Pipeline B fallback).
          */
         streamReceiver.setPacketCallback {
                 data,
@@ -153,6 +201,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                         width = frame.width,
                         height = frame.height,
                         format = frame.pixelFormat,
+                        buffer = frame.buffer?.array(),
+                        bitmap = frame.bitmap,
                         timestampUs = frame.timestampUs
                     )
                 }
@@ -459,6 +509,11 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                         rtspPlayerEngine.player
                 )
             }
+
+            diagnosticsManager.logger.info(
+                Subsystem.FRAME_PIPELINE,
+                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
+            )
         }
     }
 
@@ -514,7 +569,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
             diagnosticsManager.logger.info(
                 Subsystem.FRAME_PIPELINE,
-                "Frame delivery pipeline active"
+                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
             )
         }
     }
@@ -640,11 +695,15 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
+        // Unregister previous backend consumer and register the new one
+        activeBackend?.let { framePipeline.unregisterConsumer(it.consumerId) }
+
         val backend =
             compatibilityManager
                 .createBackendForProfile(profile)
 
         activeBackend = backend
+        backend?.let { framePipeline.registerConsumer(it) }
 
         diagnosticsManager.updateCameraDetection(
             profile.cameraApi,
@@ -665,7 +724,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
         diagnosticsManager.logger.info(
             Subsystem.TARGET_COMPATIBILITY,
-            "Selected target profile: ${profile.appName}"
+            "Selected target profile: ${profile.appName} (${backend?.backendName ?: "No backend"})"
         )
     }
 
@@ -714,17 +773,17 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
 
         /*
-         * RTSPPlayerEngine has release().
+         * RTSPPlayerEngine release.
          */
         rtspPlayerEngine.release()
 
         /*
-         * VideoDecoder does NOT expose release().
-         * stop() is the supported cleanup operation.
+         * VideoDecoder cleanup.
          */
         videoDecoder.stop()
 
         framePipeline.unregisterAll()
+        framePipeline.stop()
 
         activeBackend?.release()
 

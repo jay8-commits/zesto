@@ -64,6 +64,8 @@ class Camera2Backend : CameraVirtualizationBackend {
             width = frame.width,
             height = frame.height,
             format = frame.pixelFormat,
+            buffer = frame.buffer?.array(),
+            bitmap = frame.bitmap,
             timestampUs = frame.timestampUs
         )
     }
@@ -109,6 +111,8 @@ class LegacyCameraBackend : CameraVirtualizationBackend {
             width = frame.width,
             height = frame.height,
             format = PixelFormat.NV21,
+            buffer = frame.buffer?.array(),
+            bitmap = frame.bitmap,
             timestampUs = frame.timestampUs
         )
     }
@@ -151,9 +155,10 @@ class CameraXIntegration : CameraVirtualizationBackend {
             width = frame.width,
             height = frame.height,
             format = PixelFormat.SURFACE_TEXTURE,
+            buffer = frame.buffer?.array(),
+            bitmap = frame.bitmap,
             timestampUs = frame.timestampUs
         )
     }
     override fun onConsumerDetached() {}
 }
-

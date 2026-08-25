@@ -15,7 +15,10 @@ import com.example.MainActivity
 import com.example.zesto.decoder.FrameDecodeListener
 import com.example.zesto.decoder.HardwareVideoDecoder
 import com.example.zesto.decoder.VideoDecoder
+import com.example.zesto.frame.FrameConsumer
 import com.example.zesto.frame.FramePipeline
+import com.example.zesto.frame.FrameProvider
+import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
 import com.example.zesto.frame.ZestoFrameBridge
 import com.example.zesto.stream.RTSPPlayerEngine
@@ -209,6 +212,33 @@ class ZestoStreamingService : Service() {
                 serviceScope
             )
 
+        // Register default BridgeFrameConsumer so FramePipeline is always active and delivering to ZestoFrameBridge
+        val bridgeConsumer = object : FrameConsumer {
+            override val consumerId: String = "service_bridge_consumer"
+            override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
+
+            override fun onConsumerAttached(provider: FrameProvider) {}
+
+            override fun onFrameAvailable(frame: VideoFrame) {
+                ZestoFrameBridge.postFrame(
+                    width = frame.width,
+                    height = frame.height,
+                    format = frame.pixelFormat,
+                    buffer = frame.buffer?.array(),
+                    bitmap = frame.bitmap,
+                    timestampUs = frame.timestampUs
+                )
+            }
+
+            override fun onConsumerDetached() {}
+        }
+        framePipeline.registerConsumer(bridgeConsumer)
+
+        // Forward frames from RTSPPlayerEngine directly into FramePipeline
+        playerEngine.setFrameListener { frame ->
+            framePipeline.pushFrame(frame)
+        }
+
         videoDecoder.configure(
             width = 1280,
             height = 720
@@ -229,7 +259,7 @@ class ZestoStreamingService : Service() {
                         height = frame.height,
                         format = frame.pixelFormat,
                         buffer = frame.buffer?.array(),
-                        bitmap = null,
+                        bitmap = frame.bitmap,
                         timestampUs = frame.timestampUs
                     )
                 }
@@ -239,7 +269,6 @@ class ZestoStreamingService : Service() {
                     cause: Throwable?
                 ) {
                     // Decode errors are reported by the decoder.
-                    // Do not crash the foreground service.
                 }
             }
         )
@@ -434,11 +463,6 @@ class ZestoStreamingService : Service() {
 
         _isRunning.value = false
 
-        /*
-         * Stop the RTSP player but do not call release()
-         * from this service. The RTSP engine's lifecycle is
-         * managed by its existing stopStream() API.
-         */
         playerEngine.stopStream()
 
         videoDecoder.stop()
@@ -558,11 +582,6 @@ class ZestoStreamingService : Service() {
 
     override fun onDestroy() {
 
-        /*
-         * Stop the coroutine collector first so it cannot
-         * continue observing the player while the service
-         * is shutting down.
-         */
         playerStateJob?.cancel()
         playerStateJob = null
 
@@ -574,21 +593,11 @@ class ZestoStreamingService : Service() {
 
         stopPipelineInternal()
 
-        /*
-         * IMPORTANT:
-         *
-         * Do NOT call:
-         *
-         * playerEngine.release()
-         *
-         * because the current project/compiler does not expose
-         * that method on the RTSPPlayerEngine type.
-         *
-         * stopStream() is sufficient for the service shutdown path.
-         */
+        playerEngine.release()
 
         videoDecoder.release()
 
+        framePipeline.unregisterAll()
         framePipeline.stop()
 
         serviceScope.cancel()

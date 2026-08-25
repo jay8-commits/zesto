@@ -1,17 +1,12 @@
 package com.example.zesto.stream
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import android.view.Surface
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DecoderCounters
-import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -30,272 +25,671 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Real-time RTSP Player Engine integrating ExoPlayer with hardware-accelerated MediaCodec decoding,
- * real-time frame telemetry, latency calculation, and auto-reconnection.
+ * Zesto RTSP playback engine.
+ *
+ * Responsibilities:
+ * - RTSP playback through Media3 ExoPlayer
+ * - RTP-over-TCP / RTP-over-UDP selection
+ * - Hardware decoder selection with fallback
+ * - Real rendered-frame and dropped-frame telemetry
+ * - Real Media3 playback error reporting
+ * - Automatic reconnect with exponential backoff
+ *
+ * Note:
+ * Media3/ExoPlayer does not expose a simple "RTP packets received"
+ * counter through Player.Listener. Therefore this class does NOT
+ * fabricate packet counts. Transport packet telemetry should come
+ * from the RTSP transport layer if packet-level statistics are needed.
  */
 @OptIn(UnstableApi::class)
 class RTSPPlayerEngine(
     private val context: Context,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main.immediate)
 ) {
 
     private var exoPlayer: ExoPlayer? = null
-    val player: ExoPlayer? get() = exoPlayer
 
-    private val _streamState = MutableStateFlow<StreamState>(StreamState.Disconnected)
-    val streamState: StateFlow<StreamState> = _streamState.asStateFlow()
+    val player: ExoPlayer?
+        get() = exoPlayer
 
-    private val _streamStats = MutableStateFlow(StreamStats())
-    val streamStats: StateFlow<StreamStats> = _streamStats.asStateFlow()
+    private val _streamState =
+        MutableStateFlow<StreamState>(StreamState.Disconnected)
 
-    private val _decoderState = MutableStateFlow<DecoderState>(DecoderState.Uninitialized)
-    val decoderState: StateFlow<DecoderState> = _decoderState.asStateFlow()
+    val streamState: StateFlow<StreamState> =
+        _streamState.asStateFlow()
 
-    private val _decoderStats = MutableStateFlow(DecoderStats())
-    val decoderStats: StateFlow<DecoderStats> = _decoderStats.asStateFlow()
+    private val _streamStats =
+        MutableStateFlow(StreamStats())
+
+    val streamStats: StateFlow<StreamStats> =
+        _streamStats.asStateFlow()
+
+    private val _decoderState =
+        MutableStateFlow<DecoderState>(DecoderState.Uninitialized)
+
+    val decoderState: StateFlow<DecoderState> =
+        _decoderState.asStateFlow()
+
+    private val _decoderStats =
+        MutableStateFlow(DecoderStats())
+
+    val decoderStats: StateFlow<DecoderStats> =
+        _decoderStats.asStateFlow()
 
     private var activeConfig: StreamConfig? = null
+
     private var reconnectJob: Job? = null
     private var statsMonitorJob: Job? = null
+
     private var reconnectAttempts = 0
 
-    private val renderedFramesCount = AtomicLong(0L)
-    private val droppedFramesCount = AtomicLong(0L)
-    private val decodeErrorCount = AtomicLong(0L)
+    /*
+     * IMPORTANT:
+     *
+     * onRenderedFirstFrame() is NOT a frame counter.
+     * It fires for the first rendered frame of a playback period.
+     *
+     * We therefore count rendered frames using AnalyticsListener's
+     * onVideoFrameProcessingOffset() callback where available.
+     */
+    private val renderedFramesCount =
+        AtomicLong(0L)
 
-    private var lastFpsTimestamp = System.currentTimeMillis()
-    private var framesSinceLastFps = 0L
-    private var currentVideoWidth = 1280
-    private var currentVideoHeight = 720
-    private var decoderName = "MediaCodec-Hardware"
+    private val droppedFramesCount =
+        AtomicLong(0L)
+
+    private val decodeErrorCount =
+        AtomicLong(0L)
+
+    private var lastFpsTimestamp =
+        System.currentTimeMillis()
+
+    private var framesSinceLastFps =
+        0L
+
+    private var currentVideoWidth =
+        0
+
+    private var currentVideoHeight =
+        0
+
+    private var decoderName =
+        "Unknown"
 
     init {
         initializePlayer()
     }
 
     private fun initializePlayer() {
-        if (exoPlayer != null) return
+        if (exoPlayer != null) {
+            return
+        }
 
         try {
-            val renderersFactory = DefaultRenderersFactory(context)
-                .setEnableDecoderFallback(true)
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            val renderersFactory =
+                DefaultRenderersFactory(context)
+                    .setEnableDecoderFallback(true)
+                    .setExtensionRendererMode(
+                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                    )
 
-            val builder = ExoPlayer.Builder(context, renderersFactory)
-            val playerInstance = builder.build()
+            val playerInstance =
+                ExoPlayer.Builder(
+                    context,
+                    renderersFactory
+                ).build()
 
-            playerInstance.addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    when (playbackState) {
-                        Player.STATE_BUFFERING -> {
-                            if (_streamState.value !is StreamState.Reconnecting) {
-                                _streamState.value = StreamState.Connecting
+            playerInstance.addListener(
+                object : Player.Listener {
+
+                    override fun onPlaybackStateChanged(
+                        playbackState: Int
+                    ) {
+                        when (playbackState) {
+
+                            Player.STATE_IDLE -> {
+                                if (_streamState.value is StreamState.Connected) {
+                                    _streamState.value =
+                                        StreamState.Disconnected
+                                }
                             }
-                            _decoderState.value = DecoderState.Configured("video/avc", currentVideoWidth, currentVideoHeight)
-                        }
-                        Player.STATE_READY -> {
-                            val url = activeConfig?.url ?: ""
-                            _streamState.value = StreamState.Connected(url)
-                            _decoderState.value = DecoderState.Running
-                            reconnectAttempts = 0
-                        }
-                        Player.STATE_ENDED -> {
-                            _streamState.value = StreamState.Disconnected
-                            _decoderState.value = DecoderState.Stopped
-                        }
-                        Player.STATE_IDLE -> {
-                            if (_streamState.value is StreamState.Connected) {
-                                _streamState.value = StreamState.Disconnected
+
+                            Player.STATE_BUFFERING -> {
+                                if (_streamState.value !is StreamState.Reconnecting) {
+                                    _streamState.value =
+                                        StreamState.Connecting
+                                }
+
+                                /*
+                                 * Do not claim that the decoder is running
+                                 * merely because ExoPlayer is buffering.
+                                 */
+                                _decoderState.value =
+                                    DecoderState.Configured(
+                                        "video/avc",
+                                        currentVideoWidth,
+                                        currentVideoHeight
+                                    )
+                            }
+
+                            Player.STATE_READY -> {
+                                val url =
+                                    activeConfig?.url.orEmpty()
+
+                                _streamState.value =
+                                    StreamState.Connected(url)
+
+                                reconnectAttempts = 0
+
+                                /*
+                                 * READY means the player is prepared.
+                                 * Actual video rendering is confirmed
+                                 * separately by AnalyticsListener.
+                                 */
+                            }
+
+                            Player.STATE_ENDED -> {
+                                _streamState.value =
+                                    StreamState.Disconnected
+
+                                _decoderState.value =
+                                    DecoderState.Stopped
                             }
                         }
                     }
-                }
 
-                override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    if (videoSize.width > 0 && videoSize.height > 0) {
-                        currentVideoWidth = videoSize.width
-                        currentVideoHeight = videoSize.height
+                    override fun onIsPlayingChanged(
+                        isPlaying: Boolean
+                    ) {
+                        if (isPlaying) {
+                            _decoderState.value =
+                                DecoderState.Running
+                        }
+                    }
+
+                    override fun onVideoSizeChanged(
+                        videoSize: VideoSize
+                    ) {
+                        if (
+                            videoSize.width > 0 &&
+                            videoSize.height > 0
+                        ) {
+                            currentVideoWidth =
+                                videoSize.width
+
+                            currentVideoHeight =
+                                videoSize.height
+
+                            _decoderStats.update {
+                                it.copy(
+                                    width = videoSize.width,
+                                    height = videoSize.height
+                                )
+                            }
+                        }
+                    }
+
+                    override fun onRenderedFirstFrame() {
+                        /*
+                         * This confirms that at least one actual video
+                         * frame reached the renderer.
+                         *
+                         * Do NOT increment renderedFramesCount here,
+                         * because this callback is only the first-frame
+                         * notification.
+                         */
+                        _decoderState.value =
+                            DecoderState.Running
+                    }
+
+                    override fun onPlayerError(
+                        error: PlaybackException
+                    ) {
+                        decodeErrorCount.incrementAndGet()
+
+                        val message =
+                            buildPlaybackErrorMessage(error)
+
                         _decoderStats.update {
-                            it.copy(width = videoSize.width, height = videoSize.height)
+                            it.copy(
+                                decodeErrors =
+                                    decodeErrorCount.get()
+                            )
+                        }
+
+                        handlePlaybackFailure(
+                            message,
+                            error
+                        )
+                    }
+                }
+            )
+
+            playerInstance.addAnalyticsListener(
+                object : AnalyticsListener {
+
+                    override fun onDroppedVideoFrames(
+                        eventTime: AnalyticsListener.EventTime,
+                        droppedFrames: Int,
+                        elapsedMs: Long
+                    ) {
+                        if (droppedFrames <= 0) {
+                            return
+                        }
+
+                        droppedFramesCount.addAndGet(
+                            droppedFrames.toLong()
+                        )
+
+                        _decoderStats.update {
+                            it.copy(
+                                droppedFrameCount =
+                                    droppedFramesCount.get()
+                            )
                         }
                     }
-                }
 
-                override fun onRenderedFirstFrame() {
-                    renderedFramesCount.incrementAndGet()
-                    framesSinceLastFps++
-                    _decoderState.value = DecoderState.Running
-                }
+                    override fun onVideoDecoderInitialized(
+                        eventTime: AnalyticsListener.EventTime,
+                        decoderNameParam: String,
+                        initializedTimestampMs: Long,
+                        initializationDurationMs: Long
+                    ) {
+                        decoderName =
+                            decoderNameParam
 
-                override fun onPlayerError(error: PlaybackException) {
-                    decodeErrorCount.incrementAndGet()
-                    val errorMsg = error.message ?: "RTSP Playback Error"
-                    _decoderStats.update { it.copy(decodeErrors = decodeErrorCount.get()) }
+                        _decoderStats.update {
+                            it.copy(
+                                pixelFormat =
+                                    decoderName
+                            )
+                        }
+                    }
 
-                    handlePlaybackFailure(errorMsg, error)
-                }
-            })
+                    /*
+                     * Media3 reports the amount of video frame processing
+                     * work through this callback. It is useful as a real
+                     * indication that video frames are reaching the video
+                     * renderer.
+                     */
+                    override fun onVideoFrameProcessingOffset(
+                        eventTime: AnalyticsListener.EventTime,
+                        totalProcessingOffsetUs: Long,
+                        frameCount: Int
+                    ) {
+                        if (frameCount <= 0) {
+                            return
+                        }
 
-            playerInstance.addAnalyticsListener(object : AnalyticsListener {
-                override fun onDroppedVideoFrames(
-                    eventTime: AnalyticsListener.EventTime,
-                    droppedFrames: Int,
-                    elapsedMs: Long
-                ) {
-                    droppedFramesCount.addAndGet(droppedFrames.toLong())
-                    _decoderStats.update {
-                        it.copy(droppedFrameCount = droppedFramesCount.get())
+                        renderedFramesCount.addAndGet(
+                            frameCount.toLong()
+                        )
+
+                        framesSinceLastFps +=
+                            frameCount
                     }
                 }
+            )
 
-                override fun onVideoDecoderInitialized(
-                    eventTime: AnalyticsListener.EventTime,
-                    decoderNameParam: String,
-                    initializedTimestampMs: Long,
-                    initializationDurationMs: Long
-                ) {
-                    decoderName = decoderNameParam
-                    _decoderStats.update {
-                        it.copy(pixelFormat = decoderName)
-                    }
-                }
-            })
+            exoPlayer =
+                playerInstance
 
-            this.exoPlayer = playerInstance
         } catch (e: Exception) {
-            // Player initialization fallback (e.g. headless unit tests)
-            _decoderState.value = DecoderState.Error("Player initialization error: ${e.message}", e)
+
+            _decoderState.value =
+                DecoderState.Error(
+                    "Player initialization error: ${e.message}",
+                    e
+                )
         }
     }
 
-    fun startStream(config: StreamConfig) {
-        this.activeConfig = config
+    fun startStream(
+        config: StreamConfig
+    ) {
+        activeConfig = config
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
         reconnectAttempts = 0
+
         renderedFramesCount.set(0L)
         droppedFramesCount.set(0L)
         decodeErrorCount.set(0L)
+
         framesSinceLastFps = 0L
-        lastFpsTimestamp = System.currentTimeMillis()
+        lastFpsTimestamp =
+            System.currentTimeMillis()
+
+        currentVideoWidth = 0
+        currentVideoHeight = 0
+
+        _decoderStats.value =
+            DecoderStats()
 
         initializePlayer()
+
         connectInternal(config)
+
         startMetricsMonitor()
     }
 
-    private fun connectInternal(config: StreamConfig) {
-        val playerInstance = exoPlayer ?: return
-        _streamState.value = StreamState.Connecting
+    private fun connectInternal(
+        config: StreamConfig
+    ) {
+        val playerInstance =
+            exoPlayer ?: run {
+                handlePlaybackFailure(
+                    "ExoPlayer is not initialized",
+                    null
+                )
+                return
+            }
+
+        _streamState.value =
+            StreamState.Connecting
 
         try {
-            val forceTcp = config.protocol == TransportProtocol.RTSP_TCP
-            val mediaItem = MediaItem.fromUri(config.url)
-            val rtspMediaSource = RtspMediaSource.Factory()
-                .setForceUseRtpTcp(forceTcp)
-                .setTimeoutMs(config.connectionTimeoutMs)
-                .setUserAgent("Zesto/1.0 (Android Systems Pipeline)")
-                .createMediaSource(mediaItem)
+            /*
+             * Stop the previous playback period before replacing
+             * the MediaSource. This prevents stale RTSP sessions
+             * during reconnects.
+             */
+            playerInstance.stop()
+            playerInstance.clearMediaItems()
 
-            playerInstance.setMediaSource(rtspMediaSource)
+            val forceTcp =
+                config.protocol ==
+                    TransportProtocol.RTSP_TCP
+
+            val mediaItem =
+                MediaItem.fromUri(config.url)
+
+            val mediaSource =
+                RtspMediaSource.Factory()
+                    .setForceUseRtpTcp(forceTcp)
+                    .setTimeoutMs(
+                        config.connectionTimeoutMs
+                    )
+                    .setUserAgent(
+                        "Zesto/1.0 (Android Systems Pipeline)"
+                    )
+                    .createMediaSource(mediaItem)
+
+            playerInstance.setMediaSource(
+                mediaSource
+            )
+
             playerInstance.prepare()
-            playerInstance.playWhenReady = true
+
+            playerInstance.playWhenReady =
+                true
+
         } catch (e: Exception) {
-            handlePlaybackFailure("Failed to connect to RTSP source: ${e.message}", e)
+
+            handlePlaybackFailure(
+                "Failed to connect to RTSP source: ${e.message}",
+                e
+            )
         }
     }
 
-    private fun handlePlaybackFailure(reason: String, cause: Throwable?) {
-        val config = activeConfig
-        if (config != null && config.autoReconnect && reconnectAttempts < config.maxReconnectAttempts) {
-            reconnectAttempts++
-            _streamState.value = StreamState.Reconnecting(
-                attempt = reconnectAttempts,
-                maxAttempts = config.maxReconnectAttempts,
-                reason = reason
-            )
+    private fun handlePlaybackFailure(
+        reason: String,
+        cause: Throwable?
+    ) {
+        val config =
+            activeConfig
 
-            val backoffMultiplier = (1L shl (reconnectAttempts - 1).coerceIn(0, 5))
-            val delayDuration = (config.reconnectDelayMs * backoffMultiplier).coerceAtMost(15000L)
+        if (
+            config != null &&
+            config.autoReconnect &&
+            reconnectAttempts <
+                config.maxReconnectAttempts
+        ) {
+
+            reconnectAttempts++
+
+            _streamState.value =
+                StreamState.Reconnecting(
+                    attempt =
+                        reconnectAttempts,
+                    maxAttempts =
+                        config.maxReconnectAttempts,
+                    reason =
+                        reason
+                )
+
+            val exponent =
+                (reconnectAttempts - 1)
+                    .coerceIn(0, 5)
+
+            val backoffMultiplier =
+                1L shl exponent
+
+            val delayDuration =
+                (
+                    config.reconnectDelayMs *
+                        backoffMultiplier
+                    ).coerceAtMost(15_000L)
 
             reconnectJob?.cancel()
-            reconnectJob = scope.launch {
-                delay(delayDuration)
-                connectInternal(config)
-            }
+
+            reconnectJob =
+                scope.launch {
+
+                    delay(
+                        delayDuration
+                    )
+
+                    if (
+                        activeConfig === config
+                    ) {
+                        connectInternal(
+                            config
+                        )
+                    }
+                }
+
         } else {
-            _streamState.value = StreamState.Error(
-                message = reason,
-                cause = cause,
-                recoverable = true
+
+            _streamState.value =
+                StreamState.Error(
+                    message = reason,
+                    cause = cause,
+                    recoverable = true
+                )
+
+            _decoderState.value =
+                DecoderState.Error(
+                    reason,
+                    cause
+                )
+        }
+    }
+
+    private fun buildPlaybackErrorMessage(
+        error: PlaybackException
+    ): String {
+
+        val cause =
+            generateSequence<Throwable?>(
+                error
+            ) { it.cause }
+                .filterNotNull()
+                .joinToString(
+                    separator = " → "
+                ) {
+                    "${it::class.java.simpleName}: ${it.message}"
+                }
+
+        return buildString {
+
+            append(
+                error.message
+                    ?: "RTSP playback error"
             )
-            _decoderState.value = DecoderState.Error(reason, cause)
+
+            if (cause.isNotBlank()) {
+                append(" | Cause chain: ")
+                append(cause)
+            }
         }
     }
 
     fun stopStream() {
         reconnectJob?.cancel()
         reconnectJob = null
+
         statsMonitorJob?.cancel()
         statsMonitorJob = null
 
         exoPlayer?.stop()
         exoPlayer?.clearMediaItems()
-        _streamState.value = StreamState.Disconnected
-        _decoderState.value = DecoderState.Stopped
+
+        _streamState.value =
+            StreamState.Disconnected
+
+        _decoderState.value =
+            DecoderState.Stopped
     }
 
     private fun startMetricsMonitor() {
         statsMonitorJob?.cancel()
-        statsMonitorJob = scope.launch {
-            while (true) {
-                delay(500L)
-                updateMetrics()
+
+        statsMonitorJob =
+            scope.launch {
+
+                while (true) {
+
+                    delay(500L)
+
+                    updateMetrics()
+                }
             }
-        }
     }
 
     private fun updateMetrics() {
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastFpsTimestamp
-        val playerInstance = exoPlayer
 
-        if (elapsed >= 1000L) {
-            val fps = if (elapsed > 0) (framesSinceLastFps * 1000.0) / elapsed else 0.0
-            framesSinceLastFps = 0L
-            lastFpsTimestamp = now
+        val now =
+            System.currentTimeMillis()
 
-            val isStreaming = _streamState.value is StreamState.Connected
-            val rendered = renderedFramesCount.get()
-            val dropped = droppedFramesCount.get()
-            val errors = decodeErrorCount.get()
+        val elapsed =
+            now - lastFpsTimestamp
 
-            _decoderStats.update { current ->
-                current.copy(
-                    width = currentVideoWidth,
-                    height = currentVideoHeight,
-                    fps = if (isStreaming && rendered > 0) fps.coerceAtLeast(0.0) else 0.0,
-                    decodedFrameCount = rendered,
-                    droppedFrameCount = dropped,
-                    decodeErrors = errors,
-                    averageDecodeLatencyMs = 0L,
-                    lastFrameTimestampUs = if (rendered > 0) System.nanoTime() / 1000 else 0L
-                )
+        if (elapsed < 1_000L) {
+            return
+        }
+
+        val fps =
+            if (elapsed > 0) {
+                (
+                    framesSinceLastFps *
+                        1_000.0
+                    ) / elapsed
+            } else {
+                0.0
             }
 
-            _streamStats.update { current ->
-                current.copy(
-                    framesReceived = rendered,
-                    reconnectCount = reconnectAttempts,
-                    networkLatencyMs = 0L,
-                    lastPacketTimestamp = if (isStreaming) now else 0L
-                )
-            }
+        framesSinceLastFps = 0L
+        lastFpsTimestamp = now
+
+        val rendered =
+            renderedFramesCount.get()
+
+        val dropped =
+            droppedFramesCount.get()
+
+        val errors =
+            decodeErrorCount.get()
+
+        val playerInstance =
+            exoPlayer
+
+        val isActuallyPlaying =
+            playerInstance?.isPlaying == true
+
+        _decoderStats.update { current ->
+
+            current.copy(
+                width =
+                    currentVideoWidth,
+
+                height =
+                    currentVideoHeight,
+
+                fps =
+                    if (
+                        isActuallyPlaying &&
+                        rendered > 0
+                    ) {
+                        fps
+                    } else {
+                        0.0
+                    },
+
+                decodedFrameCount =
+                    rendered,
+
+                droppedFrameCount =
+                    dropped,
+
+                decodeErrors =
+                    errors,
+
+                averageDecodeLatencyMs =
+                    0L,
+
+                lastFrameTimestampUs =
+                    if (rendered > 0) {
+                        System.nanoTime() / 1_000L
+                    } else {
+                        0L
+                    }
+            )
+        }
+
+        /*
+         * This is intentionally NOT called "packetsReceived".
+         *
+         * Media3's public ExoPlayer API does not provide a reliable
+         * RTP-packet counter here.
+         *
+         * framesReceived represents actual video frames processed
+         * by the video renderer.
+         */
+        _streamStats.update { current ->
+
+            current.copy(
+                framesReceived =
+                    rendered,
+
+                reconnectCount =
+                    reconnectAttempts,
+
+                networkLatencyMs =
+                    0L,
+
+                lastPacketTimestamp =
+                    if (isActuallyPlaying) {
+                        now
+                    } else {
+                        0L
+                    }
+            )
         }
     }
 
     fun release() {
+
         stopStream()
+
         exoPlayer?.release()
+
         exoPlayer = null
-        _decoderState.value = DecoderState.Uninitialized
+
+        _decoderState.value =
+            DecoderState.Uninitialized
     }
 }

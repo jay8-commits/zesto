@@ -33,27 +33,55 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Make Gradle Wrapper Executable
+        shell: bash
         run: chmod +x ./gradlew
+
+      - name: Show Project Structure
+        shell: bash
+        run: |
+          echo "=== PROJECT ROOT ==="
+          ls -la
+
+          echo "=== GRADLE FILES ==="
+          find . -maxdepth 3 -type f \( \
+            -name "build.gradle" -o \
+            -name "build.gradle.kts" -o \
+            -name "settings.gradle" -o \
+            -name "settings.gradle.kts" \
+          \) -print
 
       - name: Show Gradle Version
         run: ./gradlew --version
 
-      - name: Clean
+      - name: Clean Project
         run: ./gradlew clean --no-daemon --no-configuration-cache --stacktrace
 
       - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --no-daemon --no-configuration-cache --stacktrace
         continue-on-error: true
+        run: ./gradlew testDebugUnitTest --no-daemon --no-configuration-cache --stacktrace
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --no-configuration-cache --stacktrace
 
-      - name: Verify APK
+      - name: Find Generated APK
+        shell: bash
         run: |
-          echo "=== APK OUTPUT ==="
-          find app/build/outputs -type f -name "*.apk" -print
+          echo "=== GENERATED APK FILES ==="
 
-          APK=$(find app/build/outputs -type f -name "*.apk" -print -quit)
+          find . \
+            -type f \
+            -name "*.apk" \
+            -not -path "./.gradle/*" \
+            -print
+
+      - name: Verify APK Exists
+        shell: bash
+        run: |
+          APK=$(find . \
+            -type f \
+            -name "*.apk" \
+            -not -path "./.gradle/*" \
+            -print -quit)
 
           if [ -z "$APK" ]; then
             echo "ERROR: No APK was generated."
@@ -63,52 +91,25 @@ jobs:
           echo "APK FOUND:"
           echo "$APK"
 
-      - name: Prepare Zesto Package
-        run: |
-          mkdir -p build/zesto-package
-
-          APK=$(find app/build/outputs -type f -name "*.apk" -print -quit)
-
-          cp "$APK" build/zesto-package/zesto-debug.apk
-
-          cat > build/zesto-package/README.txt <<'EOF'
-Zesto Camera Virtualization Project
-
-Application ID:
-com.aistudio.zesto.vcam
-
-Debug APK:
-zesto-debug.apk
-
-This package contains the APK produced by the Gradle build.
-EOF
-
-      - name: Upload Zesto APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: zesto-debug-apk
-          path: build/zesto-package/zesto-debug.apk
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Zesto Package
-        uses: actions/upload-artifact@v4
-        with:
-          name: zesto-package
-          path: build/zesto-package/
+          path: |
+            **/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Build Summary
         if: always()
+        shell: bash
         run: |
           echo "======================================"
           echo "ZESTO BUILD SUMMARY"
           echo "======================================"
 
-          if [ -d app/build/outputs ]; then
-            echo "Build output directory:"
-            find app/build/outputs -maxdepth 4 -type f -print
-          else
-            echo "No build output directory found."
-          fi
+          find . \
+            -type f \
+            -name "*.apk" \
+            -not -path "./.gradle/*" \
+            -print || true

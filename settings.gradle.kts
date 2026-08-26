@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "Zesto"
 
 include(":app")
+include(":xposed-api")

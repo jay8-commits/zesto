@@ -269,6 +269,17 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
+            ZestoStreamingService.globalServiceState.collect { sState ->
+                val running = sState != com.example.zesto.service.ServiceRuntimeState.SERVICE_STOPPED
+                _uiState.update {
+                    it.copy(
+                        isServiceRunning = running
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
             diagnosticsManager.logger.logs.collect { logs ->
                 _uiState.update {
                     it.copy(

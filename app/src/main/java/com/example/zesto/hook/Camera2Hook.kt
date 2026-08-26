@@ -1,16 +1,15 @@
 package com.example.zesto.hook
 
 import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Handler
 import android.util.Log
 import android.view.Surface
-import android.view.SurfaceHolder
+import com.example.zesto.frame.FrameCropMode
+import com.example.zesto.frame.ZestoFrameTransformer
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -35,6 +34,7 @@ object Camera2Hook {
         CAMERA2_DEVICE_OPEN_INTERCEPTED,
         CAMERA2_SESSION_INTERCEPTED,
         SURFACE_TARGET_ATTACHED,
+        SURFACE_LOST,
         FRAME_PUMP_ACTIVE,
         HOOK_FAILED
     }
@@ -43,6 +43,7 @@ object Camera2Hook {
     private val isPumping = AtomicBoolean(false)
     private val renderExecutor = Executors.newSingleThreadExecutor()
     private var pumpTask: Future<*>? = null
+    private val activeSurfaces = CopyOnWriteArrayList<Surface>()
 
     private val substitutedFramesCount = AtomicLong(0L)
     val totalSubstitutedFrames: Long get() = substitutedFramesCount.get()
@@ -216,7 +217,6 @@ object Camera2Hook {
 
         // Hook createCustomCaptureSession / createCaptureSessionByOutputConfigurations
         try {
-            val sessionCallbackClass = Class.forName("android.hardware.camera2.CameraCaptureSession\$StateCallback", false, classLoader)
             for (m in deviceClass.declaredMethods) {
                 if (m.name == "createCaptureSessionByOutputConfigurations" || m.name == "createCustomCaptureSession") {
                     XposedHelpers.findAndHookMethod(
@@ -259,28 +259,35 @@ object Camera2Hook {
 
         val validSurfaces = outputs.filter { it.isValid }
         if (validSurfaces.isNotEmpty()) {
+            if (activeSurfaces.isNotEmpty() && activeSurfaces != validSurfaces) {
+                Log.i(TAG, "[SURFACE_REPLACED] Replacing ${activeSurfaces.size} previous surfaces with ${validSurfaces.size} new surfaces")
+            }
+            activeSurfaces.clear()
+            activeSurfaces.addAll(validSurfaces)
+
             currentStatus = HookStatus.SURFACE_TARGET_ATTACHED
-            Log.i(TAG, "[SURFACE_TARGET_ATTACHED] Attached to ${validSurfaces.size} valid target surfaces.")
+            Log.i(TAG, "[SURFACE_ATTACHED] Attached to ${validSurfaces.size} valid target surface(s).")
             startFramePump(validSurfaces, targetPackage)
         } else {
-            Log.w(TAG, "[SURFACE_TARGET_ATTACHED] No currently valid surfaces in output list (${outputs.size} given)")
+            currentStatus = HookStatus.SURFACE_LOST
+            Log.w(TAG, "[SURFACE_LOST] No currently valid surfaces in output list (${outputs.size} given)")
         }
     }
 
     /**
-     * Continuously substitutes frames into target surfaces.
+     * Continuously substitutes frames into target surfaces using canonical 9:16 portrait normalization.
      */
     fun startFramePump(surfaces: List<Surface>, targetPackage: String = "unknown") {
         stopFramePump()
         isPumping.set(true)
         currentStatus = HookStatus.FRAME_PUMP_ACTIVE
 
-        val activeMsg = "Active frame substitution pump rendering OBS frames onto ${surfaces.size} target surface(s)"
+        val activeMsg = "Active frame substitution pump rendering 9:16 portrait frames onto ${surfaces.size} target surface(s)"
         Log.i(TAG, "[FRAME_SUBSTITUTION_ACTIVE] $activeMsg")
+        Log.i(TAG, "[FRAME_SOURCE_STARTED] Frame substitution pump started for $targetPackage")
         ZestoRemoteFrameSource.reportMilestone("FRAME_SUBSTITUTION_ACTIVE", activeMsg)
 
         pumpTask = renderExecutor.submit {
-            val paint = Paint().apply { isFilterBitmap = true }
             var cycleCount = 0L
 
             while (isPumping.get()) {
@@ -289,29 +296,50 @@ object Camera2Hook {
                     val bitmap = frameResult.bitmap
                     cycleCount++
 
+                    var hasValidSurface = false
                     for (surface in surfaces) {
-                        if (!surface.isValid) continue
-                        val canvas: Canvas? = surface.lockCanvas(null)
-                        if (canvas != null) {
-                            try {
-                                if (bitmap != null && !bitmap.isRecycled) {
-                                    val src = Rect(0, 0, bitmap.width, bitmap.height)
-                                    val dst = Rect(0, 0, canvas.width, canvas.height)
-                                    canvas.drawBitmap(bitmap, src, dst, paint)
-                                } else {
-                                    ZestoRemoteFrameSource.renderStandbyTestPattern(canvas, cycleCount, frameResult.healthState)
-                                }
-                            } finally {
-                                surface.unlockCanvasAndPost(canvas)
-                                val count = substitutedFramesCount.incrementAndGet()
-                                if (count == 1L || count % 60L == 0L) {
-                                    val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId})"
-                                    Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
-                                    ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                        if (!surface.isValid) {
+                            Log.d(TAG, "[SURFACE_DETACHED] Target surface became invalid")
+                            continue
+                        }
+                        hasValidSurface = true
+
+                        var canvas: Canvas? = null
+                        try {
+                            canvas = surface.lockCanvas(null)
+                            if (canvas != null) {
+                                ZestoFrameTransformer.renderToCanvas(
+                                    canvas = canvas,
+                                    bitmap = bitmap,
+                                    targetPackage = targetPackage,
+                                    frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount,
+                                    healthState = frameResult.healthState,
+                                    cropMode = FrameCropMode.CENTER_CROP_9_16
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Canvas render exception: ${e.message}")
+                        } finally {
+                            if (canvas != null) {
+                                try {
+                                    surface.unlockCanvasAndPost(canvas)
+                                    val count = substitutedFramesCount.incrementAndGet()
+                                    if (count == 1L || count % 60L == 0L) {
+                                        val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId})"
+                                        Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
+                                        ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "UnlockCanvasAndPost exception: ${e.message}")
                                 }
                             }
                         }
                     }
+
+                    if (!hasValidSurface) {
+                        currentStatus = HookStatus.SURFACE_LOST
+                    }
+
                     Thread.sleep(33L) // ~30 FPS frame pacing
                 } catch (_: InterruptedException) {
                     break
@@ -319,12 +347,13 @@ object Camera2Hook {
                     Log.w(TAG, "Frame pump cycle exception: ${e.message}")
                 }
             }
+            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Frame pump loop exited")
         }
     }
 
     fun stopFramePump() {
         if (isPumping.getAndSet(false)) {
-            Log.i(TAG, "Frame substitution pump stopped.")
+            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Frame substitution pump stopped.")
         }
         pumpTask?.cancel(true)
         pumpTask = null
@@ -333,3 +362,4 @@ object Camera2Hook {
         }
     }
 }
+

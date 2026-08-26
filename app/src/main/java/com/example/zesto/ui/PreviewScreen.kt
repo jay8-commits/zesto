@@ -70,11 +70,11 @@ fun PreviewScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Stream Preview Viewport matching Elegant Dark Section
+        // Stream Preview Viewport - 9:16 Portrait Canvas
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 10f)
+                .height(380.dp)
                 .clip(RoundedCornerShape(24.dp))
                 .background(Color.Black)
                 .border(1.dp, ElegantDarkOutlineVariant, RoundedCornerShape(24.dp))
@@ -82,7 +82,7 @@ fun PreviewScreen(
             contentAlignment = Alignment.Center
         ) {
             if (isLiveVideoActive) {
-                // Real Live Video Rendering via Hardware-Accelerated PlayerView
+                // Real Live Video Rendering via Hardware-Accelerated PlayerView with 9:16 / Fit centering
                 AndroidView(
                     factory = { context ->
                         PlayerView(context).apply {
@@ -127,7 +127,7 @@ fun PreviewScreen(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = if (uiState.isConnecting) "CONNECTING TO RTSP..." else "STANDBY / STREAM READY",
+                        text = if (uiState.isConnecting) "CONNECTING TO RTSP..." else "STANDBY / 9:16 STREAM READY",
                         color = if (uiState.isConnecting) ElegantDarkPrimary else ElegantDarkTextSecondary,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,

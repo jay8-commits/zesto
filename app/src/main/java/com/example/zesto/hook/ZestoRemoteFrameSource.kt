@@ -3,17 +3,12 @@ package com.example.zesto.hook
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import com.example.zesto.frame.FrameHealthState
 import com.example.zesto.frame.ZestoFrameBridge
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.example.zesto.frame.ZestoFrameTransformer
 
 /**
  * Data container for frames pulled from the local bridge or cross-process provider.
@@ -37,6 +32,7 @@ object ZestoRemoteFrameSource {
 
     private var targetAppContext: Context? = null
     private var attachedPackageName: String = "unknown.target"
+    private var lastIpcLogMs: Long = 0L
 
     fun setAttachedPackage(packageName: String) {
         this.attachedPackageName = packageName
@@ -67,9 +63,9 @@ object ZestoRemoteFrameSource {
      * Fetches the latest video frame either from in-memory bridge or cross-process IPC.
      */
     fun fetchLatestFrame(): RemoteFrameResult {
-        // 1. In-process direct bridge check
+        // 1. In-process direct bridge check (Fast-path when running in the same process)
         val localFrame = ZestoFrameBridge.consumeLatestFrame()
-        if (localFrame.bitmap != null) {
+        if (localFrame.bitmap != null && !localFrame.bitmap.isRecycled) {
             return RemoteFrameResult(
                 frameId = localFrame.frameId,
                 bitmap = localFrame.bitmap,
@@ -111,7 +107,11 @@ object ZestoRemoteFrameSource {
                 RemoteFrameResult()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to query ZestoFrameContentProvider: ${e.message}")
+            val now = System.currentTimeMillis()
+            if (now - lastIpcLogMs > 5000L) {
+                lastIpcLogMs = now
+                Log.w(TAG, "IPC query to ZestoFrameContentProvider: ${e.message}")
+            }
             RemoteFrameResult()
         }
     }
@@ -140,70 +140,14 @@ object ZestoRemoteFrameSource {
     }
 
     /**
-     * Renders a crisp virtual camera test card when RTSP video stream is in standby.
+     * Renders a crisp virtual camera test card in true 9:16 portrait format.
      */
     fun renderStandbyTestPattern(canvas: Canvas, frameId: Long, health: String) {
-        val w = canvas.width.toFloat()
-        val h = canvas.height.toFloat()
-
-        // Background
-        val bgPaint = Paint().apply { color = Color.rgb(15, 23, 42) }
-        canvas.drawRect(0f, 0f, w, h, bgPaint)
-
-        // Center card
-        val cardPaint = Paint().apply { color = Color.rgb(30, 41, 59) }
-        val cardRect = Rect(
-            (w * 0.1f).toInt(),
-            (h * 0.2f).toInt(),
-            (w * 0.9f).toInt(),
-            (h * 0.8f).toInt()
+        ZestoFrameTransformer.renderPortraitStandbyPattern(
+            canvas = canvas,
+            targetPackage = attachedPackageName,
+            frameId = frameId,
+            healthState = health
         )
-        canvas.drawRect(cardRect, cardPaint)
-
-        // Header accent line
-        val accentPaint = Paint().apply { color = Color.rgb(16, 185, 129) }
-        canvas.drawRect(
-            w * 0.1f,
-            h * 0.2f,
-            w * 0.9f,
-            h * 0.22f,
-            accentPaint
-        )
-
-        val textPaint = Paint().apply {
-            color = Color.WHITE
-            textSize = (h * 0.045f).coerceIn(24f, 48f)
-            isAntiAlias = true
-        }
-
-        val secondaryPaint = Paint().apply {
-            color = Color.rgb(148, 163, 184)
-            textSize = (h * 0.035f).coerceIn(18f, 36f)
-            isAntiAlias = true
-        }
-
-        val emeraldPaint = Paint().apply {
-            color = Color.rgb(16, 185, 129)
-            textSize = (h * 0.035f).coerceIn(18f, 36f)
-            isAntiAlias = true
-        }
-
-        val startX = w * 0.14f
-        var currentY = h * 0.30f
-        val lineSpacing = h * 0.065f
-
-        canvas.drawText("ZESTO VIRTUAL CAMERA ACTIVE", startX, currentY, textPaint)
-        currentY += lineSpacing
-        canvas.drawText("TARGET: $attachedPackageName", startX, currentY, emeraldPaint)
-        currentY += lineSpacing
-        canvas.drawText("PIPELINE: RTSP -> Decoder -> Virtual Camera2", startX, currentY, secondaryPaint)
-        currentY += lineSpacing
-        canvas.drawText("STATUS: Intercepted | Health: $health", startX, currentY, secondaryPaint)
-        currentY += lineSpacing
-        canvas.drawText("SOURCE: rtsp://192.168.1.49:8554/live/obs", startX, currentY, secondaryPaint)
-        currentY += lineSpacing
-
-        val timeStr = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-        canvas.drawText("CYCLE: #$frameId | TIME: $timeStr", startX, currentY, emeraldPaint)
     }
 }

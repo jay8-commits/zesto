@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -15,6 +16,19 @@ enum class FrameHealthState {
     NO_FRAME,
     FRAME_ACTIVE,
     FRAME_STALLED
+}
+
+/**
+ * Deterministic pipeline lifecycle states.
+ */
+enum class PipelineLifecycleState {
+    IDLE,
+    CONNECTING,
+    CONNECTED,
+    STREAMING,
+    SURFACE_LOST,
+    RECONNECTING,
+    ERROR
 }
 
 /**
@@ -48,6 +62,9 @@ object ZestoFrameBridge {
     private val _latestFrame = MutableStateFlow(FrameData())
     val latestFrame: StateFlow<FrameData> = _latestFrame.asStateFlow()
 
+    private val _pipelineState = MutableStateFlow(PipelineLifecycleState.IDLE)
+    val pipelineState: StateFlow<PipelineLifecycleState> = _pipelineState.asStateFlow()
+
     private val _externalMilestones = MutableStateFlow<List<ExternalMilestoneEvent>>(emptyList())
     val externalMilestones: StateFlow<List<ExternalMilestoneEvent>> = _externalMilestones.asStateFlow()
 
@@ -55,11 +72,22 @@ object ZestoFrameBridge {
     private val deliveredCounter = AtomicLong(0L)
     private val droppedCounter = AtomicLong(0L)
     private val lastFrameTimeMs = AtomicLong(0L)
+    private val reconnectCounter = AtomicInteger(0)
 
     val totalFramesReceived: Long get() = frameCounter.get()
     val totalFramesDelivered: Long get() = deliveredCounter.get()
     val totalFramesDropped: Long get() = droppedCounter.get()
     val lastFrameArrivalEpochMs: Long get() = lastFrameTimeMs.get()
+    val reconnectCount: Int get() = reconnectCounter.get()
+
+    fun updatePipelineState(state: PipelineLifecycleState) {
+        _pipelineState.value = state
+        Log.i(TAG, "[PIPELINE_STATE] Pipeline transitioned to: $state")
+    }
+
+    fun incrementReconnectCount() {
+        reconnectCounter.incrementAndGet()
+    }
 
     /**
      * Updates the shared bridge with a newly decoded frame.
@@ -85,6 +113,9 @@ object ZestoFrameBridge {
             buffer = buffer,
             bitmap = bitmap
         )
+        if (_pipelineState.value != PipelineLifecycleState.STREAMING) {
+            _pipelineState.value = PipelineLifecycleState.STREAMING
+        }
         if (id == 1L || id % 60L == 0L) {
             Log.i(TAG, "[FRAME_BRIDGE_POSTED] Frame #$id (${width}x${height}, format=$format) posted to shared frame bridge.")
         }
@@ -139,5 +170,6 @@ object ZestoFrameBridge {
         droppedCounter.set(0L)
         lastFrameTimeMs.set(0L)
         _latestFrame.value = FrameData()
+        _pipelineState.value = PipelineLifecycleState.IDLE
     }
 }

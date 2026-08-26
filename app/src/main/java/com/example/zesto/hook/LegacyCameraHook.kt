@@ -1,12 +1,12 @@
 package com.example.zesto.hook
 
 import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
+import com.example.zesto.frame.FrameCropMode
+import com.example.zesto.frame.ZestoFrameTransformer
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import java.util.concurrent.Executors
@@ -112,6 +112,7 @@ object LegacyCameraHook {
     fun onPreviewDisplaySet(holder: SurfaceHolder, targetPackage: String = "unknown") {
         currentStatus = LegacyHookStatus.PREVIEW_DISPLAY_INTERCEPTED
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceHolder preview display.")
+        Log.i(TAG, "[SURFACE_ATTACHED] Camera1 SurfaceHolder surface attached.")
         startFramePump(holder.surface, targetPackage)
     }
 
@@ -119,6 +120,7 @@ object LegacyCameraHook {
         currentStatus = LegacyHookStatus.PREVIEW_DISPLAY_INTERCEPTED
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceTexture preview.")
         val surface = Surface(texture)
+        Log.i(TAG, "[SURFACE_ATTACHED] Camera1 SurfaceTexture surface attached.")
         startFramePump(surface, targetPackage)
     }
 
@@ -128,12 +130,12 @@ object LegacyCameraHook {
         isPumping.set(true)
         currentStatus = LegacyHookStatus.FRAME_PUMP_ACTIVE
 
-        val activeMsg = "Active frame substitution pump rendering OBS frames onto Camera1 surface"
+        val activeMsg = "Active frame substitution pump rendering 9:16 portrait frames onto Camera1 surface"
         Log.i(TAG, "[FRAME_SUBSTITUTION_ACTIVE] $activeMsg")
+        Log.i(TAG, "[FRAME_SOURCE_STARTED] Camera1 frame substitution pump started for $targetPackage")
         ZestoRemoteFrameSource.reportMilestone("FRAME_SUBSTITUTION_ACTIVE", activeMsg)
 
         pumpTask = renderExecutor.submit {
-            val paint = Paint().apply { isFilterBitmap = true }
             var cycleCount = 0L
 
             while (isPumping.get() && surface.isValid) {
@@ -142,23 +144,33 @@ object LegacyCameraHook {
                     val bitmap = frameResult.bitmap
                     cycleCount++
 
-                    val canvas: Canvas? = surface.lockCanvas(null)
-                    if (canvas != null) {
-                        try {
-                            if (bitmap != null && !bitmap.isRecycled) {
-                                val src = Rect(0, 0, bitmap.width, bitmap.height)
-                                val dst = Rect(0, 0, canvas.width, canvas.height)
-                                canvas.drawBitmap(bitmap, src, dst, paint)
-                            } else {
-                                ZestoRemoteFrameSource.renderStandbyTestPattern(canvas, cycleCount, frameResult.healthState)
-                            }
-                        } finally {
-                            surface.unlockCanvasAndPost(canvas)
-                            val count = substitutedFramesCount.incrementAndGet()
-                            if (count == 1L || count % 60L == 0L) {
-                                val logMsg = "Target preview surface received and displayed frame #$count"
-                                Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
-                                ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                    var canvas: Canvas? = null
+                    try {
+                        canvas = surface.lockCanvas(null)
+                        if (canvas != null) {
+                            ZestoFrameTransformer.renderToCanvas(
+                                canvas = canvas,
+                                bitmap = bitmap,
+                                targetPackage = targetPackage,
+                                frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount,
+                                healthState = frameResult.healthState,
+                                cropMode = FrameCropMode.CENTER_CROP_9_16
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Camera1 render canvas exception: ${e.message}")
+                    } finally {
+                        if (canvas != null) {
+                            try {
+                                surface.unlockCanvasAndPost(canvas)
+                                val count = substitutedFramesCount.incrementAndGet()
+                                if (count == 1L || count % 60L == 0L) {
+                                    val logMsg = "Target preview surface received and displayed frame #$count"
+                                    Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
+                                    ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Camera1 unlock canvas exception: ${e.message}")
                             }
                         }
                     }
@@ -169,11 +181,14 @@ object LegacyCameraHook {
                     Log.w(TAG, "Camera1 render cycle exception: ${e.message}")
                 }
             }
+            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Camera1 frame pump loop exited")
         }
     }
 
     fun stopFramePump() {
-        isPumping.set(false)
+        if (isPumping.getAndSet(false)) {
+            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Camera1 frame substitution pump stopped.")
+        }
         pumpTask?.cancel(true)
         pumpTask = null
     }

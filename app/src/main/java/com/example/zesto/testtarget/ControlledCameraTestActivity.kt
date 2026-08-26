@@ -253,6 +253,7 @@ fun ControlledCameraTestScreen(
     onBack: () -> Unit,
     startCamera: (TextureView) -> Unit,
     stopCamera: () -> Unit,
+    targetPackage: String = "com.example.zesto.testtarget",
     modifier: Modifier = Modifier
 ) {
     var isVirtualInjectionActive by remember { mutableStateOf(false) }
@@ -301,23 +302,18 @@ fun ControlledCameraTestScreen(
                     val canvas: Canvas? = tv.lockCanvas()
                     if (canvas != null) {
                         try {
-                            if (frame.bitmap != null) {
-                                val srcRect = Rect(0, 0, frame.bitmap.width, frame.bitmap.height)
-                                val dstRect = Rect(0, 0, canvas.width, canvas.height)
-                                canvas.drawBitmap(frame.bitmap, srcRect, dstRect, paint)
+                            if (frame.bitmap != null && !frame.bitmap.isRecycled) {
                                 virtualFramesInSecond++
                                 activeResolution = "${frame.width} x ${frame.height}"
-                            } else {
-                                canvas.drawColor(AndroidColor.rgb(15, 23, 42))
-                                canvas.drawText("ZESTO VIRTUAL CAMERA INJECTION", 40f, 80f, textPaint)
-                                if (healthState == FrameHealthState.NO_FRAME) {
-                                    canvas.drawText("STATUS: NO FRAME (AWAITING RTSP FEED)", 40f, 130f, textPaint)
-                                    canvas.drawText("Start Zesto streaming service with valid RTSP URL", 40f, 180f, textPaint)
-                                } else {
-                                    canvas.drawText("STATUS: ${healthState.name}", 40f, 130f, textPaint)
-                                    canvas.drawText("Delivered Frames: $frameCount", 40f, 180f, textPaint)
-                                }
                             }
+                            com.example.zesto.frame.ZestoFrameTransformer.renderToCanvas(
+                                canvas = canvas,
+                                bitmap = frame.bitmap,
+                                targetPackage = targetPackage,
+                                frameId = if (frame.frameId > 0) frame.frameId else frameCount,
+                                healthState = healthState.name,
+                                cropMode = com.example.zesto.frame.FrameCropMode.CENTER_CROP_9_16
+                            )
                         } finally {
                             tv.unlockCanvasAndPost(canvas)
                         }
@@ -391,7 +387,7 @@ fun ControlledCameraTestScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 10f)
+                    .height(380.dp)
                     .clip(RoundedCornerShape(20.dp))
                     .border(1.5.dp, if (isVirtualInjectionActive) ElegantDarkTertiary else ElegantDarkOutlineVariant, RoundedCornerShape(20.dp)),
                 colors = CardDefaults.cardColors(containerColor = Color.Black)

@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -73,12 +74,35 @@ object ZestoFrameBridge {
     private val droppedCounter = AtomicLong(0L)
     private val lastFrameTimeMs = AtomicLong(0L)
     private val reconnectCounter = AtomicInteger(0)
+    private val providerRunning = AtomicBoolean(false)
+    private val bridgeReady = AtomicBoolean(false)
 
     val totalFramesReceived: Long get() = frameCounter.get()
     val totalFramesDelivered: Long get() = deliveredCounter.get()
     val totalFramesDropped: Long get() = droppedCounter.get()
     val lastFrameArrivalEpochMs: Long get() = lastFrameTimeMs.get()
     val reconnectCount: Int get() = reconnectCounter.get()
+    val isProviderRunning: Boolean get() = providerRunning.get()
+    val isBridgeReady: Boolean get() = bridgeReady.get()
+
+    fun setBridgeReady(ready: Boolean) {
+        if (bridgeReady.compareAndSet(!ready, ready)) {
+            if (ready) {
+                Log.i(TAG, "[FRAME_BRIDGE] bridge ready")
+                Log.i(TAG, "[FRAME_BRIDGE] bridge connected")
+            } else {
+                Log.i(TAG, "[FRAME_BRIDGE] bridge disconnected")
+            }
+        }
+    }
+
+    fun setProviderRunning(running: Boolean) {
+        val prev = providerRunning.getAndSet(running)
+        if (prev != running) {
+            Log.i(TAG, "[FRAME_PROVIDER] provider running=$running")
+            setBridgeReady(running)
+        }
+    }
 
     fun updatePipelineState(state: PipelineLifecycleState) {
         _pipelineState.value = state
@@ -116,7 +140,11 @@ object ZestoFrameBridge {
         if (_pipelineState.value != PipelineLifecycleState.STREAMING) {
             _pipelineState.value = PipelineLifecycleState.STREAMING
         }
+        if (!bridgeReady.get()) {
+            setBridgeReady(true)
+        }
         if (id == 1L || id % 60L == 0L) {
+            Log.i(TAG, "[FRAME_PIPELINE] frames received=$id, frames delivered=${deliveredCounter.get()}, frames dropped=${droppedCounter.get()}, queue depth=1")
             Log.i(TAG, "[FRAME_BRIDGE_POSTED] Frame #$id (${width}x${height}, format=$format) posted to shared frame bridge.")
         }
     }
@@ -169,7 +197,10 @@ object ZestoFrameBridge {
         deliveredCounter.set(0L)
         droppedCounter.set(0L)
         lastFrameTimeMs.set(0L)
+        providerRunning.set(false)
+        bridgeReady.set(false)
         _latestFrame.value = FrameData()
+        _externalMilestones.value = emptyList()
         _pipelineState.value = PipelineLifecycleState.IDLE
     }
 }

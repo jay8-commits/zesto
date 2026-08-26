@@ -1,5 +1,6 @@
 package com.example.zesto.frame
 
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -15,8 +17,10 @@ import java.util.concurrent.atomic.AtomicLong
  * Statistics for the frame delivery pipeline.
  */
 data class FramePipelineStats(
+    val receivedFrames: Long = 0L,
     val deliveredFrames: Long = 0L,
     val droppedFrames: Long = 0L,
+    val queueDepth: Int = 0,
     val activeConsumers: Int = 0,
     val currentFps: Double = 0.0,
     val averagePipelineLatencyMs: Long = 0L,
@@ -25,19 +29,28 @@ data class FramePipelineStats(
 
 /**
  * High-performance FramePipeline and FrameProvider implementation.
- * Manages frame delivery to UI, virtual camera backends, and diagnostics without blocking the decoder thread.
+ * Manages bounded real-time frame delivery with drop-oldest strategy to prevent pipeline backpressure.
  */
 class FramePipeline(
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
+    private val maxQueueCapacity: Int = 2
 ) : FrameProvider {
+
+    companion object {
+        private const val TAG = "FramePipeline"
+    }
 
     private val consumers = ConcurrentHashMap<String, FrameConsumer>()
     private val isRunning = AtomicBoolean(false)
 
+    private val receivedCount = AtomicLong(0L)
     private val deliveredCount = AtomicLong(0L)
     private val droppedCount = AtomicLong(0L)
     private var lastFpsCalculationTime = System.currentTimeMillis()
     private var framesSinceLastFpsCheck = 0L
+
+    // Bounded drop-oldest queue for real-time camera frames
+    private val frameQueue = ConcurrentLinkedDeque<VideoFrame>()
 
     private val _stats = MutableStateFlow(FramePipelineStats())
     val stats: StateFlow<FramePipelineStats> = _stats.asStateFlow()
@@ -45,12 +58,15 @@ class FramePipeline(
     fun start() {
         if (isRunning.compareAndSet(false, true)) {
             _stats.update { it.copy(isRunning = true) }
+            Log.i(TAG, "[FRAME_PIPELINE] Pipeline started (bounded capacity=$maxQueueCapacity)")
         }
     }
 
     fun stop() {
         if (isRunning.compareAndSet(true, false)) {
-            _stats.update { it.copy(isRunning = false) }
+            frameQueue.clear()
+            _stats.update { it.copy(isRunning = false, queueDepth = 0) }
+            Log.i(TAG, "[FRAME_PIPELINE] Pipeline stopped")
         }
     }
 
@@ -71,6 +87,7 @@ class FramePipeline(
     override fun unregisterAll() {
         consumers.values.forEach { it.onConsumerDetached() }
         consumers.clear()
+        frameQueue.clear()
         updateConsumerCount()
     }
 
@@ -82,31 +99,50 @@ class FramePipeline(
 
     /**
      * Called by the VideoDecoder when a new frame is decoded.
+     * Implements bounded/drop-oldest queue strategy so stale frames do not accumulate.
      */
     fun pushFrame(frame: VideoFrame) {
+        val received = receivedCount.incrementAndGet()
+
         if (!isRunning.get() || consumers.isEmpty()) {
-            droppedCount.incrementAndGet()
+            val dropped = droppedCount.incrementAndGet()
             updateStats(frameDropped = true)
+            if (received == 1L || received % 60L == 0L) {
+                Log.i(TAG, "[FRAME_PIPELINE] frames received=$received, frames delivered=${deliveredCount.get()}, frames dropped=$dropped, queue depth=${frameQueue.size}")
+            }
             return
         }
 
+        // Bounded drop-oldest queue management
+        while (frameQueue.size >= maxQueueCapacity) {
+            frameQueue.pollFirst()
+            val dropped = droppedCount.incrementAndGet()
+            Log.d(TAG, "[FRAME_PIPELINE] Dropped oldest frame to prevent backpressure (queueDepth=${frameQueue.size}, totalDropped=$dropped)")
+        }
+
+        frameQueue.offerLast(frame)
+        val activeFrame = frameQueue.pollFirst() ?: frame
         val startDeliveryTime = System.currentTimeMillis()
 
-        // Deliver frame to all registered consumers asynchronously or directly
+        // Deliver frame to all registered consumers
         for (consumer in consumers.values) {
             try {
-                consumer.onFrameAvailable(frame)
+                consumer.onFrameAvailable(activeFrame)
             } catch (e: Exception) {
-                // Prevent rogue consumer from crashing pipeline
                 droppedCount.incrementAndGet()
             }
         }
 
-        deliveredCount.incrementAndGet()
+        val delivered = deliveredCount.incrementAndGet()
         framesSinceLastFpsCheck++
 
         val deliveryLatency = System.currentTimeMillis() - startDeliveryTime
+        val currentDepth = frameQueue.size
         updateStats(frameDropped = false, latencyMs = deliveryLatency)
+
+        if (received == 1L || received % 60L == 0L) {
+            Log.i(TAG, "[FRAME_PIPELINE] frames received=$received, frames delivered=$delivered, frames dropped=${droppedCount.get()}, queue depth=$currentDepth")
+        }
     }
 
     private fun updateConsumerCount() {
@@ -124,8 +160,10 @@ class FramePipeline(
 
             _stats.update { current ->
                 current.copy(
+                    receivedFrames = receivedCount.get(),
                     deliveredFrames = deliveredCount.get(),
                     droppedFrames = droppedCount.get(),
+                    queueDepth = frameQueue.size,
                     activeConsumers = consumers.size,
                     currentFps = fps,
                     averagePipelineLatencyMs = latencyMs,
@@ -135,8 +173,10 @@ class FramePipeline(
         } else {
             _stats.update { current ->
                 current.copy(
+                    receivedFrames = receivedCount.get(),
                     deliveredFrames = deliveredCount.get(),
                     droppedFrames = droppedCount.get(),
+                    queueDepth = frameQueue.size,
                     activeConsumers = consumers.size,
                     isRunning = isRunning.get()
                 )

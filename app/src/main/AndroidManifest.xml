@@ -12,6 +12,19 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
+    <queries>
+        <package android:name="net.sourceforge.opencamera" />
+        <package android:name="com.android.camera" />
+        <package android:name="com.android.camera2" />
+        <package android:name="com.google.android.GoogleCamera" />
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.VIDEO_CAPTURE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
@@ -64,7 +77,9 @@
         <provider
             android:name="com.example.zesto.frame.ZestoFrameContentProvider"
             android:authorities="com.example.zesto.frameprovider"
-            android:exported="true" />
+            android:exported="true"
+            android:multiprocess="false"
+            android:grantUriPermissions="true" />
 
     </application>
 

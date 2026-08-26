@@ -241,6 +241,8 @@ class ZestoStreamingService : Service() {
 
         framePipeline.start()
 
+        ZestoFrameBridge.setProviderRunning(true)
+
         observePlayerState()
     }
 
@@ -424,6 +426,7 @@ class ZestoStreamingService : Service() {
 
         framePipeline.stop()
 
+        ZestoFrameBridge.setProviderRunning(false)
         ZestoFrameBridge.reset()
     }
 

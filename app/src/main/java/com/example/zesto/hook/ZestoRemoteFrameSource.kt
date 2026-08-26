@@ -28,17 +28,30 @@ data class RemoteFrameResult(
 object ZestoRemoteFrameSource {
     private const val TAG = "ZestoRemoteFrameSource"
     const val AUTHORITY = "com.example.zesto.frameprovider"
-    private val PROVIDER_URI: Uri = Uri.parse("content://$AUTHORITY/frame")
+    private val PROVIDER_URI: Uri by lazy {
+        try {
+            Uri.parse("content://$AUTHORITY/frame")
+        } catch (_: Throwable) {
+            Uri.EMPTY
+        }
+    }
 
     private var targetAppContext: Context? = null
     private var attachedPackageName: String = "unknown.target"
     private var lastIpcLogMs: Long = 0L
+
+    @Volatile
+    private var isProviderAvailable: Boolean = false
+    private var consecutiveErrors: Int = 0
+    private var nextProviderCheckMs: Long = 0L
 
     fun setAttachedPackage(packageName: String) {
         this.attachedPackageName = packageName
     }
 
     fun getAttachedPackage(): String = attachedPackageName
+
+    fun isProviderReachable(): Boolean = isProviderAvailable
 
     fun getTargetContext(): Context? {
         if (targetAppContext != null) return targetAppContext
@@ -61,11 +74,14 @@ object ZestoRemoteFrameSource {
 
     /**
      * Fetches the latest video frame either from in-memory bridge or cross-process IPC.
+     * Uses backoff when FrameProvider is unavailable to eliminate busy retry thrashing.
      */
     fun fetchLatestFrame(): RemoteFrameResult {
         // 1. In-process direct bridge check (Fast-path when running in the same process)
         val localFrame = ZestoFrameBridge.consumeLatestFrame()
         if (localFrame.bitmap != null && !localFrame.bitmap.isRecycled) {
+            isProviderAvailable = true
+            consecutiveErrors = 0
             return RemoteFrameResult(
                 frameId = localFrame.frameId,
                 bitmap = localFrame.bitmap,
@@ -86,15 +102,36 @@ object ZestoRemoteFrameSource {
             isStreaming = false
         )
 
+        val now = System.currentTimeMillis()
+        // If provider was unavailable, enforce backoff interval instead of 30 FPS hammering
+        if (!isProviderAvailable && now < nextProviderCheckMs) {
+            return RemoteFrameResult(
+                frameId = 0L,
+                bitmap = null,
+                width = 1280,
+                height = 720,
+                healthState = "AWAITING_ZESTO_PROVIDER",
+                isStreaming = false
+            )
+        }
+
         return try {
             val bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
             if (bundle != null) {
+                val providerRunning = bundle.getBoolean("provider_running", true)
+                val isStreaming = bundle.getBoolean("is_streaming", false)
+                val healthState = bundle.getString("health_state", "NO_FRAME")
                 val bitmap = bundle.getParcelable<Bitmap>("bitmap")
                 val frameId = bundle.getLong("frame_id", 0L)
                 val width = bundle.getInt("width", 1280)
                 val height = bundle.getInt("height", 720)
-                val healthState = bundle.getString("health_state", "NO_FRAME")
-                val isStreaming = bundle.getBoolean("is_streaming", false)
+
+                if (!isProviderAvailable) {
+                    isProviderAvailable = true
+                    consecutiveErrors = 0
+                    Log.i(TAG, "[FRAME_BRIDGE] bridge connected (provider available=$providerRunning, streaming=$isStreaming)")
+                }
+
                 RemoteFrameResult(
                     frameId = frameId,
                     bitmap = bitmap,
@@ -104,15 +141,23 @@ object ZestoRemoteFrameSource {
                     isStreaming = isStreaming
                 )
             } else {
+                handleProviderUnavailable(now)
                 RemoteFrameResult()
             }
         } catch (e: Exception) {
-            val now = System.currentTimeMillis()
-            if (now - lastIpcLogMs > 5000L) {
-                lastIpcLogMs = now
-                Log.w(TAG, "IPC query to ZestoFrameContentProvider: ${e.message}")
-            }
+            handleProviderUnavailable(now, e.message)
             RemoteFrameResult()
+        }
+    }
+
+    private fun handleProviderUnavailable(nowMs: Long, errorMsg: String? = null) {
+        consecutiveErrors++
+        isProviderAvailable = false
+        val backoffMs = (consecutiveErrors * 250L).coerceIn(250L, 2000L)
+        nextProviderCheckMs = nowMs + backoffMs
+
+        if (consecutiveErrors == 1 || consecutiveErrors % 15 == 0) {
+            Log.i(TAG, "[FRAME_PROVIDER] provider running=false (consecutiveErrors=$consecutiveErrors, retryIn=${backoffMs}ms, error=${errorMsg ?: "null response"})")
         }
     }
 

@@ -26,6 +26,7 @@ class ZestoFrameContentProvider : ContentProvider() {
         const val METHOD_GET_LATEST_FRAME = "getLatestFrame"
         const val METHOD_GET_FRAME_META = "getFrameMeta"
         const val METHOD_IS_STREAMING = "isStreaming"
+        const val METHOD_IS_PROVIDER_RUNNING = "isProviderRunning"
         const val METHOD_GET_HEALTH_STATE = "getHealthState"
         const val METHOD_REPORT_MILESTONE = "reportMilestone"
 
@@ -37,6 +38,8 @@ class ZestoFrameContentProvider : ContentProvider() {
         const val KEY_TIMESTAMP_US = "timestamp_us"
         const val KEY_FORMAT = "format"
         const val KEY_IS_STREAMING = "is_streaming"
+        const val KEY_PROVIDER_RUNNING = "provider_running"
+        const val KEY_BRIDGE_READY = "bridge_ready"
         const val KEY_BUFFER_SIZE = "buffer_size"
         const val KEY_HEALTH_STATE = "health_state"
         const val KEY_MS_SINCE_LAST_FRAME = "ms_since_last_frame"
@@ -45,6 +48,8 @@ class ZestoFrameContentProvider : ContentProvider() {
     }
 
     override fun onCreate(): Boolean {
+        Log.i(TAG, "[FRAME_PROVIDER] provider created")
+        Log.i(TAG, "[FRAME_PROVIDER] provider registered/available")
         Log.i(TAG, "[ZESTO_PROCESS_INIT] ZestoFrameContentProvider initialized.")
         return true
     }
@@ -86,6 +91,11 @@ class ZestoFrameContentProvider : ContentProvider() {
         val health = ZestoFrameBridge.getFrameHealthState()
         val msAgo = ZestoFrameBridge.getMillisecondsSinceLastFrame()
         val buffer = frame.buffer
+        val isProvRunning = ZestoFrameBridge.isProviderRunning
+        val isBrdgReady = ZestoFrameBridge.isBridgeReady
+
+        result.putBoolean(KEY_PROVIDER_RUNNING, isProvRunning)
+        result.putBoolean(KEY_BRIDGE_READY, isBrdgReady)
 
         when (method) {
             METHOD_GET_LATEST_FRAME, "getFrameBitmap" -> {
@@ -96,7 +106,7 @@ class ZestoFrameContentProvider : ContentProvider() {
                 result.putString(KEY_FORMAT, frame.format.name)
                 result.putString(KEY_HEALTH_STATE, health.name)
                 result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
-                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
                 if (frame.bitmap != null) {
                     result.putParcelable(KEY_BITMAP, frame.bitmap)
                 }
@@ -113,10 +123,14 @@ class ZestoFrameContentProvider : ContentProvider() {
                 result.putInt(KEY_BUFFER_SIZE, buffer?.size ?: 0)
                 result.putString(KEY_HEALTH_STATE, health.name)
                 result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
-                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
             }
             METHOD_IS_STREAMING -> {
-                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
+            }
+            METHOD_IS_PROVIDER_RUNNING -> {
+                result.putBoolean(KEY_PROVIDER_RUNNING, isProvRunning)
+                result.putBoolean(KEY_BRIDGE_READY, isBrdgReady)
             }
             METHOD_GET_HEALTH_STATE -> {
                 result.putString(KEY_HEALTH_STATE, health.name)

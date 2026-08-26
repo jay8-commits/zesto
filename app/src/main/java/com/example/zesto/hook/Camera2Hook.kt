@@ -243,6 +243,9 @@ object Camera2Hook {
      * Triggered when target process opens a CameraDevice.
      */
     fun onCameraDeviceOpening(cameraId: String, methodPath: String = "openCamera", targetPackage: String = "unknown") {
+        if (targetPackage != "unknown") {
+            ZestoRemoteFrameSource.setAttachedPackage(targetPackage)
+        }
         currentStatus = HookStatus.CAMERA2_DEVICE_OPEN_INTERCEPTED
         val msg = "Target process ($targetPackage) requested Camera2 device: cameraId=$cameraId via $methodPath"
         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -254,6 +257,9 @@ object Camera2Hook {
      * Hooks target surfaces and starts the live frame substitution pump.
      */
     fun onSessionConfigured(outputs: List<Surface>, targetPackage: String = "unknown", source: String = "createCaptureSession") {
+        if (targetPackage != "unknown") {
+            ZestoRemoteFrameSource.setAttachedPackage(targetPackage)
+        }
         currentStatus = HookStatus.CAMERA2_SESSION_INTERCEPTED
         Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Intercepted $source with ${outputs.size} output surfaces.")
 
@@ -268,9 +274,12 @@ object Camera2Hook {
             currentStatus = HookStatus.SURFACE_TARGET_ATTACHED
             Log.i(TAG, "[SURFACE_ATTACHED] Attached to ${validSurfaces.size} valid target surface(s).")
             startFramePump(validSurfaces, targetPackage)
-        } else {
+        } else if (outputs.isNotEmpty()) {
             currentStatus = HookStatus.SURFACE_LOST
             Log.w(TAG, "[SURFACE_LOST] No currently valid surfaces in output list (${outputs.size} given)")
+        } else {
+            currentStatus = HookStatus.CAMERA2_SESSION_INTERCEPTED
+            Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Session created with 0 initial surfaces.")
         }
     }
 

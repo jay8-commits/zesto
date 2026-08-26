@@ -1,6 +1,7 @@
 package com.example.zesto.hook
 
 import android.util.Log
+import com.example.zesto.target.TargetApplicationPatcherInspector
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
@@ -52,6 +53,13 @@ class ZestoXposedInit : IXposedHookLoadPackage {
         if (shouldHookPackage(packageName)) {
             currentLifecycle = XposedHookLifecycle.TARGET_PROCESS_ATTACHED
             ZestoRemoteFrameSource.setAttachedPackage(packageName)
+
+            // Emit PATCH_MANIFEST_APPLICATION diagnostic milestone
+            val originalAppClass = TargetApplicationPatcherInspector.resolveKnownLegitimateApplicationClass(packageName) ?: "android.app.Application"
+            val logManifestDiag = "[PATCH_MANIFEST_APPLICATION] original=$originalAppClass patched=$originalAppClass"
+            Log.i(MODULE_TAG, logManifestDiag)
+            ZestoRemoteFrameSource.reportMilestone("PATCH_MANIFEST_APPLICATION", logManifestDiag)
+
             Log.i(MODULE_TAG, "[TARGET_PROCESS_ATTACHED] Target process identified and attached: $packageName (process: $processName)")
             ZestoRemoteFrameSource.reportMilestone("TARGET_PROCESS_ATTACHED", "Attached to target package $packageName (process $processName)")
 

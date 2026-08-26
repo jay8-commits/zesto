@@ -434,4 +434,14 @@ class ExampleUnitTest {
         xposedInit.handleLoadPackage(param)
         assertEquals(com.example.zesto.hook.XposedHookLifecycle.CAMERA2_HOOK_INSTALLED, ZestoXposedInit.lifecycle)
     }
+
+    @Test
+    fun testTargetApplicationPatcherInspector() {
+        val legitimate = com.example.zesto.target.TargetApplicationPatcherInspector.resolveKnownLegitimateApplicationClass("net.sourceforge.opencamera")
+        assertEquals("net.sourceforge.opencamera.MyApplication", legitimate)
+
+        val beautyLegitimate = com.example.zesto.target.TargetApplicationPatcherInspector.resolveKnownLegitimateApplicationClass("photo.camera.beauty.hd.camera")
+        assertNull(beautyLegitimate) // Defaults safely to android.app.Application
+    }
 }
+

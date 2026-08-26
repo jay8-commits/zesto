@@ -392,13 +392,13 @@ fun TargetCompatibilityScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "1. Non-Root (LSPatch / NPatch):",
+                        text = "1. Non-Root (LSPatch / NPatch Portable Mode):",
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF38BDF8),
                         fontSize = 13.sp
                     )
                     Text(
-                        text = "• Download LSPatch APK from GitHub.\n• Select target app (e.g. Discord, Telegram) and choose Portable Mode.\n• Select Zesto APK as the embedded module.\n• Install patched target APK. It will pull live OBS frames via ZestoFrameContentProvider without rooting your phone.",
+                        text = "• Download LSPatch / NPatch.\n• Select target app (e.g. Open Camera net.sourceforge.opencamera or beauty camera photo.camera.beauty.hd.camera).\n• Choose 'Portable Mode' or 'Local Mode'.\n• Under Embedded Modules, select Zesto APK.\n• IMPORTANT: Ensure Application Class preservation is enabled (do not override android:name with an unbundled stub).\n• Install patched target APK. The app launches its legitimate Application lifecycle, hooks Camera2, and receives live frames via ZestoFrameContentProvider without root.",
                         color = ElegantDarkTextPrimary,
                         fontSize = 12.sp
                     )

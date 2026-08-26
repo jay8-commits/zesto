@@ -42,6 +42,7 @@ enum class BoundaryDiagnosticStage(val code: String, val description: String) {
     DECODER_INITIALIZED("DECODER_INITIALIZED", "Video decoder configured and initialized"),
     VIDEO_FRAME_DECODED("VIDEO_FRAME_DECODED", "Hardware/software decoder yielded video frame"),
     FRAME_BRIDGE_POSTED("FRAME_BRIDGE_POSTED", "Decoded frame committed to shared ZestoFrameBridge"),
+    PATCH_MANIFEST_APPLICATION("PATCH_MANIFEST_APPLICATION", "Target application manifest Application class verified and matched to DexClassLoader"),
     TARGET_PROCESS_ATTACHED("TARGET_PROCESS_ATTACHED", "Zesto hook attached to target application process"),
     CAMERA2_HOOK_INSTALLED("CAMERA2_HOOK_INSTALLED", "Camera2 API reflection/bytecode hook active"),
     CAMERA2_DEVICE_OPEN_INTERCEPTED("CAMERA2_DEVICE_OPEN_INTERCEPTED", "Target openCamera call intercepted"),

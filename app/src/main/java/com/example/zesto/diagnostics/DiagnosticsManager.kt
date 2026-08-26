@@ -32,6 +32,7 @@ class DiagnosticsManager(
                 BoundaryDiagnosticStage.DECODER_INITIALIZED,
                 BoundaryDiagnosticStage.VIDEO_FRAME_DECODED -> Subsystem.DECODER
                 BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED -> Subsystem.FRAME_PIPELINE
+                BoundaryDiagnosticStage.PATCH_MANIFEST_APPLICATION,
                 BoundaryDiagnosticStage.TARGET_PROCESS_ATTACHED -> Subsystem.TARGET_COMPATIBILITY
                 BoundaryDiagnosticStage.CAMERA2_HOOK_INSTALLED,
                 BoundaryDiagnosticStage.CAMERA2_DEVICE_OPEN_INTERCEPTED,

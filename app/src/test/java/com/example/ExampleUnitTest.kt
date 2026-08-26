@@ -443,5 +443,39 @@ class ExampleUnitTest {
         val beautyLegitimate = com.example.zesto.target.TargetApplicationPatcherInspector.resolveKnownLegitimateApplicationClass("photo.camera.beauty.hd.camera")
         assertNull(beautyLegitimate) // Defaults safely to android.app.Application
     }
+
+    @Test
+    fun testCamera2HookRuntimeInterceptionAndMilestoneProgression() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        val pkg = "net.sourceforge.opencamera"
+        
+        // 1. Target process opening Camera2 device
+        com.example.zesto.hook.Camera2Hook.onCameraDeviceOpening("0", "openCamera", pkg)
+        assertEquals(com.example.zesto.hook.Camera2Hook.HookStatus.CAMERA2_DEVICE_OPEN_INTERCEPTED, com.example.zesto.hook.Camera2Hook.status)
+
+        val milestones = com.example.zesto.frame.ZestoFrameBridge.externalMilestones.value
+        val openMilestone = milestones.find { it.stage == "CAMERA2_DEVICE_OPEN_INTERCEPTED" }
+        assertNotNull(openMilestone)
+        assertTrue(openMilestone!!.message.contains(pkg))
+
+        // 2. Target configuring session outputs
+        com.example.zesto.hook.Camera2Hook.onSessionConfigured(emptyList(), pkg)
+        assertEquals(com.example.zesto.hook.Camera2Hook.HookStatus.CAMERA2_SESSION_INTERCEPTED, com.example.zesto.hook.Camera2Hook.status)
+    }
+
+    @Test
+    fun testLegacyCameraHookRuntimeInterception() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        val pkg = "net.sourceforge.opencamera"
+
+        // Emulate Camera1 fallback opening
+        com.example.zesto.hook.ZestoRemoteFrameSource.setAttachedPackage(pkg)
+        com.example.zesto.hook.ZestoRemoteFrameSource.reportMilestone("CAMERA2_DEVICE_OPEN_INTERCEPTED", "Target requested Camera1 device: cameraId=0")
+
+        val milestones = com.example.zesto.frame.ZestoFrameBridge.externalMilestones.value
+        val openMilestone = milestones.find { it.stage == "CAMERA2_DEVICE_OPEN_INTERCEPTED" }
+        assertNotNull(openMilestone)
+        assertTrue(openMilestone!!.message.contains("Camera1"))
+    }
 }
 

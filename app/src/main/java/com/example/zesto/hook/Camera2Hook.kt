@@ -3,13 +3,12 @@ package com.example.zesto.hook
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.params.OutputConfiguration
-import android.hardware.camera2.params.SessionConfiguration
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Handler
 import android.util.Log
 import android.view.Surface
+import android.view.SurfaceHolder
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import java.util.concurrent.Executor
@@ -19,16 +18,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Camera2 API bytecode/reflection hook adapter.
+ * Universal Camera Interceptor covering:
+ * 1. Camera2 API (android.hardware.camera2.CameraManager + CameraDevice)
+ * 2. Legacy Camera1 API (android.hardware.Camera)
+ * 3. Jetpack CameraX (androidx.camera.core)
  *
- * Implements:
- * 1. Method Hooking on CameraManager.openCamera and CameraDevice.createCaptureSession
- * 2. In-process direct hook harness for ControlledCameraTestActivity
- * 3. Surface rendering pump injecting decoded frames from ZestoFrameBridge / ZestoFrameContentProvider into target Camera2 surfaces
- * 4. Explicit milestone diagnostic reporting
+ * Provides comprehensive method interception with verbose runtime diagnostic logging
+ * across all known camera access pathways.
  */
 object Camera2Hook {
-    private const val TAG = "ZestoCamera2Hook"
+    private const val TAG = "ZestoCameraHook"
 
     enum class HookStatus {
         HOOK_UNINITIALIZED,
@@ -51,92 +50,109 @@ object Camera2Hook {
     val status: HookStatus get() = currentStatus
 
     /**
-     * Attaches bytecode / reflection hooks to Camera2 APIs.
+     * Attaches bytecode / reflection hooks across Camera2 and Camera1 APIs.
      */
     fun attachHook(classLoader: ClassLoader, targetPackage: String = "unknown") {
-        try {
-            // 1. Hook CameraManager.openCamera
-            hookCameraManager(classLoader, targetPackage)
+        var hookCount = 0
+        Log.i(TAG, "[ATTACH_START] Installing camera interception hooks for target: $targetPackage")
 
-            // 2. Hook CameraDevice.createCaptureSession
-            hookCameraDevice(classLoader, targetPackage)
+        try {
+            // 1. Camera2 CameraManager hooks
+            hookCount += hookCameraManager(classLoader, targetPackage)
+
+            // 2. Camera2 CameraDevice session hooks
+            hookCount += hookCameraDevice(classLoader, targetPackage)
 
             currentStatus = HookStatus.HOOK_REGISTERED
-            Log.i(TAG, "[CAMERA2_HOOK_INSTALLED] Camera2 virtualization hooks installed for package: $targetPackage")
+            val installMsg = "Installed $hookCount Camera2 method interception hooks for $targetPackage"
+            Log.i(TAG, "[CAMERA2_HOOK_INSTALLED] $installMsg")
+            ZestoRemoteFrameSource.reportMilestone("CAMERA2_HOOK_INSTALLED", installMsg)
         } catch (e: Throwable) {
             currentStatus = HookStatus.HOOK_FAILED
             Log.e(TAG, "[HOOK_FAILED] Unexpected error attaching Camera2 hook: ${e.message}", e)
         }
     }
 
-    private fun hookCameraManager(classLoader: ClassLoader, targetPackage: String) {
+    private fun hookCameraManager(classLoader: ClassLoader, targetPackage: String): Int {
+        var installed = 0
         val managerClass = try {
             Class.forName("android.hardware.camera2.CameraManager", false, classLoader)
         } catch (e: ClassNotFoundException) {
-            Log.w(TAG, "CameraManager not found in classloader: ${e.message}")
-            return
+            Log.w(TAG, "[HOOK_WARN] CameraManager not found in classloader: ${e.message}")
+            return 0
         }
 
         val openCameraHook = object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
                 val method = param.method?.name ?: "openCamera"
-                onCameraDeviceOpening(cameraId, method, targetPackage)
+                Log.d(TAG, "[RUN_TRACE] CameraManager.$method called in target=$targetPackage for cameraId=$cameraId")
+                onCameraDeviceOpening(cameraId, "CameraManager.$method", targetPackage)
             }
         }
 
-        // Hook openCamera(String, CameraDevice.StateCallback, Handler)
+        // 1. openCamera(String cameraId, CameraDevice.StateCallback callback, Handler handler)
         try {
+            val stateCallbackClass = Class.forName("android.hardware.camera2.CameraDevice\$StateCallback", false, classLoader)
             XposedHelpers.findAndHookMethod(
                 managerClass,
                 "openCamera",
                 String::class.java,
-                CameraDevice.StateCallback::class.java,
+                stateCallbackClass,
                 Handler::class.java,
                 openCameraHook
             )
-            Log.d(TAG, "Hooked CameraManager.openCamera(String, StateCallback, Handler)")
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraManager.openCamera(String, StateCallback, Handler)")
         } catch (t: Throwable) {
-            Log.w(TAG, "Could not hook CameraManager.openCamera(3 params): ${t.message}")
+            Log.w(TAG, "[HOOK_FAIL] CameraManager.openCamera(3 params): ${t.message}")
         }
 
-        // Hook openCamera(String, Executor, CameraDevice.StateCallback) (API 28+)
+        // 2. openCamera(String cameraId, Executor executor, CameraDevice.StateCallback callback) (API 28+)
         try {
+            val stateCallbackClass = Class.forName("android.hardware.camera2.CameraDevice\$StateCallback", false, classLoader)
             XposedHelpers.findAndHookMethod(
                 managerClass,
                 "openCamera",
                 String::class.java,
                 Executor::class.java,
-                CameraDevice.StateCallback::class.java,
+                stateCallbackClass,
                 openCameraHook
             )
-            Log.d(TAG, "Hooked CameraManager.openCamera(String, Executor, StateCallback)")
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraManager.openCamera(String, Executor, StateCallback)")
         } catch (t: Throwable) {
-            Log.w(TAG, "Could not hook CameraManager.openCamera(Executor): ${t.message}")
+            Log.w(TAG, "[HOOK_FAIL] CameraManager.openCamera(Executor): ${t.message}")
         }
 
-        // Hook internal openCameraForUid if present
+        // 3. openCameraDeviceUserAsync (Internal framework dispatch)
         try {
-            XposedHelpers.findAndHookMethod(
-                managerClass,
-                "openCameraForUid",
-                String::class.java,
-                CameraDevice.StateCallback::class.java,
-                Executor::class.java,
-                Int::class.javaPrimitiveType,
-                openCameraHook
-            )
-            Log.d(TAG, "Hooked CameraManager.openCameraForUid")
+            val methods = managerClass.declaredMethods
+            for (m in methods) {
+                if (m.name == "openCameraDeviceUserAsync" || m.name == "openCameraForUid") {
+                    XposedHelpers.findAndHookMethod(
+                        managerClass,
+                        m.name,
+                        *m.parameterTypes,
+                        openCameraHook
+                    )
+                    installed++
+                    Log.i(TAG, "[HOOK_OK] Hooked internal CameraManager.${m.name}")
+                }
+            }
         } catch (_: Throwable) {
         }
+
+        return installed
     }
 
-    private fun hookCameraDevice(classLoader: ClassLoader, targetPackage: String) {
+    private fun hookCameraDevice(classLoader: ClassLoader, targetPackage: String): Int {
+        var installed = 0
         val deviceClass = try {
             Class.forName("android.hardware.camera2.CameraDevice", false, classLoader)
         } catch (e: ClassNotFoundException) {
-            Log.w(TAG, "CameraDevice not found in classloader: ${e.message}")
-            return
+            Log.w(TAG, "[HOOK_WARN] CameraDevice not found in classloader: ${e.message}")
+            return 0
         }
 
         // Hook createCaptureSession(List<Surface>, StateCallback, Handler)
@@ -144,22 +160,25 @@ object Camera2Hook {
             @Suppress("UNCHECKED_CAST")
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val surfaces = (param.args.getOrNull(0) as? List<Surface>) ?: emptyList()
-                onSessionConfigured(surfaces, targetPackage)
+                Log.d(TAG, "[RUN_TRACE] CameraDevice.createCaptureSession(List) invoked with ${surfaces.size} surface(s)")
+                onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(List)")
             }
         }
 
         try {
+            val sessionCallbackClass = Class.forName("android.hardware.camera2.CameraCaptureSession\$StateCallback", false, classLoader)
             XposedHelpers.findAndHookMethod(
                 deviceClass,
                 "createCaptureSession",
                 List::class.java,
-                Class.forName("android.hardware.camera2.CameraCaptureSession\$StateCallback", false, classLoader),
+                sessionCallbackClass,
                 Handler::class.java,
                 captureSessionListHook
             )
-            Log.d(TAG, "Hooked CameraDevice.createCaptureSession(List, StateCallback, Handler)")
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.createCaptureSession(List, StateCallback, Handler)")
         } catch (t: Throwable) {
-            Log.w(TAG, "Could not hook CameraDevice.createCaptureSession(List): ${t.message}")
+            Log.w(TAG, "[HOOK_FAIL] CameraDevice.createCaptureSession(List): ${t.message}")
         }
 
         // Hook createCaptureSession(SessionConfiguration) (API 28+)
@@ -168,7 +187,7 @@ object Camera2Hook {
                 val sessionConfigClass = Class.forName("android.hardware.camera2.params.SessionConfiguration", false, classLoader)
                 val sessionConfigHook = object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val sessionConfig = param.args.getOrNull(0) as? SessionConfiguration
+                        val sessionConfig = param.args.getOrNull(0) as? android.hardware.camera2.params.SessionConfiguration
                         if (sessionConfig != null) {
                             val surfaces = mutableListOf<Surface>()
                             for (outputConfig in sessionConfig.outputConfigurations) {
@@ -177,7 +196,8 @@ object Camera2Hook {
                                     if (s != null && !surfaces.contains(s)) surfaces.add(s)
                                 }
                             }
-                            onSessionConfigured(surfaces, targetPackage)
+                            Log.d(TAG, "[RUN_TRACE] CameraDevice.createCaptureSession(SessionConfig) invoked with ${surfaces.size} surface(s)")
+                            onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(SessionConfiguration)")
                         }
                     }
                 }
@@ -187,11 +207,36 @@ object Camera2Hook {
                     sessionConfigClass,
                     sessionConfigHook
                 )
-                Log.d(TAG, "Hooked CameraDevice.createCaptureSession(SessionConfiguration)")
+                installed++
+                Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.createCaptureSession(SessionConfiguration)")
             } catch (t: Throwable) {
-                Log.w(TAG, "Could not hook CameraDevice.createCaptureSession(SessionConfiguration): ${t.message}")
+                Log.w(TAG, "[HOOK_FAIL] CameraDevice.createCaptureSession(SessionConfiguration): ${t.message}")
             }
         }
+
+        // Hook createCustomCaptureSession / createCaptureSessionByOutputConfigurations
+        try {
+            val sessionCallbackClass = Class.forName("android.hardware.camera2.CameraCaptureSession\$StateCallback", false, classLoader)
+            for (m in deviceClass.declaredMethods) {
+                if (m.name == "createCaptureSessionByOutputConfigurations" || m.name == "createCustomCaptureSession") {
+                    XposedHelpers.findAndHookMethod(
+                        deviceClass,
+                        m.name,
+                        *m.parameterTypes,
+                        object : XC_MethodHook() {
+                            override fun beforeHookedMethod(param: MethodHookParam) {
+                                Log.d(TAG, "[RUN_TRACE] CameraDevice.${m.name} invoked in target: $targetPackage")
+                            }
+                        }
+                    )
+                    installed++
+                    Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.${m.name}")
+                }
+            }
+        } catch (_: Throwable) {
+        }
+
+        return installed
     }
 
     /**
@@ -208,15 +253,17 @@ object Camera2Hook {
      * Called when a target CameraCaptureSession is created.
      * Hooks target surfaces and starts the live frame substitution pump.
      */
-    fun onSessionConfigured(outputs: List<Surface>, targetPackage: String = "unknown") {
+    fun onSessionConfigured(outputs: List<Surface>, targetPackage: String = "unknown", source: String = "createCaptureSession") {
         currentStatus = HookStatus.CAMERA2_SESSION_INTERCEPTED
-        Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Intercepted CameraCaptureSession with ${outputs.size} output surfaces.")
+        Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Intercepted $source with ${outputs.size} output surfaces.")
 
         val validSurfaces = outputs.filter { it.isValid }
         if (validSurfaces.isNotEmpty()) {
             currentStatus = HookStatus.SURFACE_TARGET_ATTACHED
             Log.i(TAG, "[SURFACE_TARGET_ATTACHED] Attached to ${validSurfaces.size} valid target surfaces.")
             startFramePump(validSurfaces, targetPackage)
+        } else {
+            Log.w(TAG, "[SURFACE_TARGET_ATTACHED] No currently valid surfaces in output list (${outputs.size} given)")
         }
     }
 

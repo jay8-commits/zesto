@@ -206,7 +206,12 @@ class ExampleUnitTest {
     fun testAllTargetProfilesDefaultToNotTested() {
         val manager = CompatibilityManager()
         val allProfiles = manager.getAllProfiles()
-        assertEquals(8, allProfiles.size)
+        assertEquals(9, allProfiles.size)
+
+        val openCamera = manager.getProfile("net.sourceforge.opencamera")
+        assertNotNull(openCamera)
+        assertEquals("Open Camera", openCamera?.appName)
+        assertEquals(CameraApiType.CAMERA2, openCamera?.cameraApi)
 
         allProfiles.forEach { profile ->
             assertEquals(
@@ -395,5 +400,38 @@ class ExampleUnitTest {
 
         pipeline.stop()
         camera2Backend.release()
+    }
+
+    @Test
+    fun testZestoRemoteFrameSourceAndExternalMilestones() {
+        com.example.zesto.frame.ZestoFrameBridge.reset()
+        ZestoXposedInit.lifecycle
+        
+        com.example.zesto.hook.ZestoRemoteFrameSource.setAttachedPackage("net.sourceforge.opencamera")
+        assertEquals("net.sourceforge.opencamera", com.example.zesto.hook.ZestoRemoteFrameSource.getAttachedPackage())
+
+        com.example.zesto.hook.ZestoRemoteFrameSource.reportMilestone(
+            "TARGET_PROCESS_ATTACHED",
+            "Attached to target package net.sourceforge.opencamera"
+        )
+
+        val milestones = com.example.zesto.frame.ZestoFrameBridge.externalMilestones.value
+        assertTrue(milestones.isNotEmpty())
+        assertEquals("TARGET_PROCESS_ATTACHED", milestones.last().stage)
+        assertEquals("net.sourceforge.opencamera", milestones.last().packageName)
+    }
+
+    @Test
+    fun testXposedInitHandleLoadPackageForOpenCamera() {
+        val xposedInit = ZestoXposedInit()
+        val param = de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam(
+            "net.sourceforge.opencamera",
+            "net.sourceforge.opencamera",
+            this.javaClass.classLoader ?: ClassLoader.getSystemClassLoader(),
+            null,
+            true
+        )
+        xposedInit.handleLoadPackage(param)
+        assertEquals(com.example.zesto.hook.XposedHookLifecycle.CAMERA2_HOOK_INSTALLED, ZestoXposedInit.lifecycle)
     }
 }

@@ -74,7 +74,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<ZestoUiState> =
         _uiState.asStateFlow()
 
-    private class BridgeFrameConsumer : FrameConsumer {
+    private class BridgeFrameConsumer(private val diagnosticsManager: DiagnosticsManager) : FrameConsumer {
         override val consumerId: String = "bridge_consumer"
         override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
 
@@ -89,6 +89,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 bitmap = frame.bitmap,
                 timestampUs = frame.timestampUs
             )
+            diagnosticsManager.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED)
         }
 
         override fun onConsumerDetached() {}
@@ -118,16 +119,16 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
+        rtspPlayerEngine.diagnosticsManager = diagnosticsManager
+
         // Register default bridge frame consumer to guarantee frame delivery to ZestoFrameBridge
-        val bridgeConsumer = BridgeFrameConsumer()
+        val bridgeConsumer = BridgeFrameConsumer(diagnosticsManager)
         framePipeline.registerConsumer(bridgeConsumer)
 
         // Register the active camera virtualization backend for the selected profile
         val defaultBackend = defaultProfile?.let { compatibilityManager.createBackendForProfile(it) }
         activeBackend = defaultBackend
         defaultBackend?.let { framePipeline.registerConsumer(it) }
-
-        rtspPlayerEngine.diagnosticsManager = diagnosticsManager
 
         diagnosticsManager.updateCameraDetection(
             cameraCaps.apiType,
@@ -149,7 +150,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
         diagnosticsManager.logger.info(
             Subsystem.SYSTEM,
-            "Zesto Phase 1 & 2 Subsystems Initialized"
+            "Zesto Authoritative RTSP Stream & Virtualization Pipeline Initialized"
         )
 
         /*
@@ -166,62 +167,6 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-
-        /*
-         * Connect RTSP receiver packets to decoder (Pipeline B fallback).
-         */
-        streamReceiver.setPacketCallback {
-                data,
-                offset,
-                length,
-                timestampUs,
-                isKeyFrame ->
-
-            videoDecoder.decodePacket(
-                data,
-                offset,
-                length,
-                timestampUs,
-                isKeyFrame
-            )
-        }
-
-        /*
-         * Decoder -> FramePipeline -> ZestoFrameBridge.
-         */
-        videoDecoder.setDecodeListener(
-            object :
-                com.example.zesto.decoder.FrameDecodeListener {
-
-                override fun onFrameDecoded(
-                    frame: VideoFrame
-                ) {
-
-                    framePipeline.pushFrame(frame)
-
-                    ZestoFrameBridge.postFrame(
-                        width = frame.width,
-                        height = frame.height,
-                        format = frame.pixelFormat,
-                        buffer = frame.buffer?.array(),
-                        bitmap = frame.bitmap,
-                        timestampUs = frame.timestampUs
-                    )
-                }
-
-                override fun onDecodeError(
-                    error: String,
-                    cause: Throwable?
-                ) {
-
-                    diagnosticsManager.logger.error(
-                        Subsystem.DECODER,
-                        error,
-                        cause?.stackTraceToString()
-                    )
-                }
-            }
-        )
 
         observeSubsystems()
     }
@@ -324,12 +269,27 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-
             diagnosticsManager.logger.logs.collect { logs ->
-
                 _uiState.update {
                     it.copy(
                         eventLogs = logs
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            ZestoFrameBridge.externalMilestones.collect { events ->
+                events.lastOrNull()?.let { lastEvent ->
+                    try {
+                        val stage = com.example.zesto.diagnostics.BoundaryDiagnosticStage.valueOf(lastEvent.stage)
+                        diagnosticsManager.recordBoundaryStage(stage)
+                    } catch (_: IllegalArgumentException) {}
+
+                    diagnosticsManager.updateTarget(lastEvent.packageName, "HOOK_ACTIVE")
+                    diagnosticsManager.logger.info(
+                        Subsystem.VIRTUALIZATION,
+                        "[TARGET: ${lastEvent.packageName}] ${lastEvent.message}"
                     )
                 }
             }

@@ -42,6 +42,25 @@ class DiagnosticsManager(
         )
     }
 
+    fun removeBoundaryStage(stage: BoundaryDiagnosticStage) {
+        _snapshot.update { current ->
+            current.copy(activeBoundaries = current.activeBoundaries - stage)
+        }
+    }
+
+    fun resetPipelineBoundaries() {
+        val pipelineStages = setOf(
+            BoundaryDiagnosticStage.RTSP_CONNECTED,
+            BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED,
+            BoundaryDiagnosticStage.DECODER_INITIALIZED,
+            BoundaryDiagnosticStage.VIDEO_FRAME_DECODED,
+            BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED
+        )
+        _snapshot.update { current ->
+            current.copy(activeBoundaries = current.activeBoundaries - pipelineStages)
+        }
+    }
+
     fun updateTransport(state: StreamState, stats: StreamStats, url: String) {
         val statusStr = when (state) {
             is StreamState.Connected -> "CONNECTED"
@@ -51,8 +70,8 @@ class DiagnosticsManager(
             is StreamState.Error -> "ERROR: ${state.message}"
         }
 
-        if (state is StreamState.Connected) {
-            recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
+        if (state is StreamState.Error || state is StreamState.Disconnected || state is StreamState.Reconnecting) {
+            removeBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
         }
 
         val fault = if (state is StreamState.Error) Subsystem.TRANSPORT else null

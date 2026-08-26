@@ -1,16 +1,16 @@
 package com.example.zesto.hook
 
-import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Log
 import android.view.Surface
-import com.example.zesto.frame.ZestoFrameBridge
+import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedHelpers
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Jetpack CameraX API bytecode/reflection hook adapter.
@@ -32,14 +32,29 @@ object CameraXHook {
     private val isPumping = AtomicBoolean(false)
     private val renderExecutor = Executors.newSingleThreadExecutor()
     private var pumpTask: Future<*>? = null
+    private val substitutedFramesCount = AtomicLong(0L)
 
     val status: CameraXStatus get() = currentStatus
 
-    fun attachHook(classLoader: ClassLoader) {
+    fun attachHook(classLoader: ClassLoader, targetPackage: String = "unknown") {
         try {
             val previewClass = Class.forName("androidx.camera.core.Preview", false, classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                previewClass,
+                "setSurfaceProvider",
+                Class.forName("androidx.camera.core.Preview\$SurfaceProvider", false, classLoader),
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val msg = "Target process ($targetPackage) configured CameraX Preview SurfaceProvider"
+                        Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
+                        ZestoRemoteFrameSource.reportMilestone("CAMERA2_DEVICE_OPEN_INTERCEPTED", msg)
+                    }
+                }
+            )
+
             currentStatus = CameraXStatus.HOOK_REGISTERED
-            Log.i(TAG, "[HOOK_REGISTERED] androidx.camera.core.Preview class identified for CameraX hooking: $previewClass")
+            Log.i(TAG, "[HOOK_REGISTERED] androidx.camera.core.Preview class hooked for package: $targetPackage")
         } catch (e: ClassNotFoundException) {
             currentStatus = CameraXStatus.NOT_PRESENT
             Log.d(TAG, "[NOT_PRESENT] CameraX Preview class not present in target app classpath")
@@ -48,34 +63,50 @@ object CameraXHook {
         }
     }
 
-    fun onSurfaceProvided(surface: Surface) {
+    fun onSurfaceProvided(surface: Surface, targetPackage: String = "unknown") {
         currentStatus = CameraXStatus.SURFACE_PROVIDER_INTERCEPTED
         Log.i(TAG, "[SURFACE_PROVIDER_INTERCEPTED] CameraX provided target preview surface.")
-        startFramePump(surface)
+        startFramePump(surface, targetPackage)
     }
 
-    private fun startFramePump(surface: Surface) {
+    private fun startFramePump(surface: Surface, targetPackage: String = "unknown") {
         stopFramePump()
         if (!surface.isValid) return
         isPumping.set(true)
         currentStatus = CameraXStatus.FRAME_PUMP_ACTIVE
 
+        val activeMsg = "Active frame substitution pump rendering OBS frames onto CameraX surface"
+        Log.i(TAG, "[FRAME_SUBSTITUTION_ACTIVE] $activeMsg")
+        ZestoRemoteFrameSource.reportMilestone("FRAME_SUBSTITUTION_ACTIVE", activeMsg)
+
         pumpTask = renderExecutor.submit {
             val paint = Paint().apply { isFilterBitmap = true }
+            var cycleCount = 0L
+
             while (isPumping.get() && surface.isValid) {
                 try {
-                    val frame = ZestoFrameBridge.consumeLatestFrame()
-                    val bitmap = frame.bitmap
+                    val frameResult = ZestoRemoteFrameSource.fetchLatestFrame()
+                    val bitmap = frameResult.bitmap
+                    cycleCount++
+
                     val canvas: Canvas? = surface.lockCanvas(null)
                     if (canvas != null) {
                         try {
-                            if (bitmap != null) {
+                            if (bitmap != null && !bitmap.isRecycled) {
                                 val src = Rect(0, 0, bitmap.width, bitmap.height)
                                 val dst = Rect(0, 0, canvas.width, canvas.height)
                                 canvas.drawBitmap(bitmap, src, dst, paint)
+                            } else {
+                                ZestoRemoteFrameSource.renderStandbyTestPattern(canvas, cycleCount, frameResult.healthState)
                             }
                         } finally {
                             surface.unlockCanvasAndPost(canvas)
+                            val count = substitutedFramesCount.incrementAndGet()
+                            if (count == 1L || count % 60L == 0L) {
+                                val logMsg = "Target preview surface received and displayed frame #$count"
+                                Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
+                                ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                            }
                         }
                     }
                     Thread.sleep(33L)
@@ -94,4 +125,3 @@ object CameraXHook {
         pumpTask = null
     }
 }
-

@@ -228,6 +228,9 @@ class RTSPPlayerEngine(
                                     _streamState.value =
                                         StreamState.Disconnected
                                 }
+                                diagnosticsManager?.removeBoundaryStage(
+                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                                )
                             }
 
                             Player.STATE_BUFFERING -> {
@@ -253,21 +256,28 @@ class RTSPPlayerEngine(
                             }
 
                             Player.STATE_READY -> {
-                                val url =
-                                    activeConfig?.url.orEmpty()
+                                val isPlaying = exoPlayer?.isPlaying == true
+                                val url = activeConfig?.url.orEmpty()
 
-                                _streamState.value =
-                                    StreamState.Connected(url)
+                                if (isPlaying) {
+                                    _streamState.value = StreamState.Connected(url)
+                                    _decoderState.value = DecoderState.Running
+                                    reconnectAttempts = 0
 
-                                reconnectAttempts = 0
-
-                                diagnosticsManager?.logger?.info(
-                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                    "[RTSP_CONNECTED] RTSP connection established and RTP media stream active: $url"
-                                )
-                                diagnosticsManager?.recordBoundaryStage(
-                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                                )
+                                    diagnosticsManager?.logger?.info(
+                                        com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                        "[RTSP_CONNECTED] RTSP connection established and RTP media stream active: $url"
+                                    )
+                                    diagnosticsManager?.recordBoundaryStage(
+                                        com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                                    )
+                                } else {
+                                    _streamState.value = StreamState.Connecting
+                                    diagnosticsManager?.logger?.info(
+                                        com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                        "RTSP player ready, awaiting media flow..."
+                                    )
+                                }
                             }
 
                             Player.STATE_ENDED -> {
@@ -276,6 +286,10 @@ class RTSPPlayerEngine(
 
                                 _decoderState.value =
                                     DecoderState.Stopped
+
+                                diagnosticsManager?.removeBoundaryStage(
+                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                                )
 
                                 diagnosticsManager?.logger?.info(
                                     com.example.zesto.diagnostics.Subsystem.TRANSPORT,
@@ -289,8 +303,22 @@ class RTSPPlayerEngine(
                         isPlaying: Boolean
                     ) {
                         if (isPlaying) {
-                            _decoderState.value =
-                                DecoderState.Running
+                            val url = activeConfig?.url.orEmpty()
+                            _streamState.value = StreamState.Connected(url)
+                            _decoderState.value = DecoderState.Running
+                            reconnectAttempts = 0
+
+                            diagnosticsManager?.logger?.info(
+                                com.example.zesto.diagnostics.Subsystem.TRANSPORT,
+                                "[RTSP_CONNECTED] RTSP connection established and active RTP media playback underway: $url"
+                            )
+                            diagnosticsManager?.recordBoundaryStage(
+                                com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                            )
+                        } else if (exoPlayer?.playbackState != Player.STATE_BUFFERING && exoPlayer?.playbackState != Player.STATE_READY) {
+                            diagnosticsManager?.removeBoundaryStage(
+                                com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                            )
                         }
                     }
 
@@ -335,10 +363,11 @@ class RTSPPlayerEngine(
                         framesSinceLastFps++
                         val width = if (currentVideoWidth > 0) currentVideoWidth else 1280
                         val height = if (currentVideoHeight > 0) currentVideoHeight else 720
+                        val timestampUs = System.nanoTime() / 1000L
 
                         diagnosticsManager?.logger?.info(
                             com.example.zesto.diagnostics.Subsystem.DECODER,
-                            "[VIDEO_FRAME_DECODED] First video frame decoded and rendered to surface (${width}x${height})"
+                            "[VIDEO_FRAME_DECODED] First video frame decoded and rendered to surface: codec=$decoderName, resolution=${width}x${height}, timestampUs=$timestampUs, frameCount=$count"
                         )
                         diagnosticsManager?.recordBoundaryStage(
                             com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED
@@ -346,7 +375,7 @@ class RTSPPlayerEngine(
 
                         val frame = VideoFrame(
                             frameNumber = count,
-                            timestampUs = System.nanoTime() / 1000L,
+                            timestampUs = timestampUs,
                             width = width,
                             height = height,
                             pixelFormat = PixelFormat.SURFACE_TEXTURE
@@ -358,6 +387,9 @@ class RTSPPlayerEngine(
                         error: PlaybackException
                     ) {
                         decodeErrorCount.incrementAndGet()
+                        diagnosticsManager?.removeBoundaryStage(
+                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+                        )
 
                         val message =
                             buildPlaybackErrorMessage(error)
@@ -459,6 +491,8 @@ class RTSPPlayerEngine(
         config: StreamConfig
     ) {
         activeConfig = config
+
+        diagnosticsManager?.resetPipelineBoundaries()
 
         reconnectJob?.cancel()
         reconnectJob = null
@@ -633,7 +667,20 @@ class RTSPPlayerEngine(
         var current: Throwable? =
             error
 
+        var isAuthError = false
+        var isHostError = false
+
         while (current != null) {
+            val msg = current.message.orEmpty()
+            val clsName = current::class.java.simpleName
+            if (msg.contains("401") || msg.contains("Unauthorized", ignoreCase = true) || clsName.contains("RtspPlaybackException")) {
+                if (msg.contains("401") || msg.contains("Unauthorized", ignoreCase = true)) {
+                    isAuthError = true
+                }
+            }
+            if (clsName.contains("UnknownHostException") || msg.contains("UnknownHost", ignoreCase = true)) {
+                isHostError = true
+            }
 
             causes.add(
                 "${current::class.java.simpleName}: ${current.message}"
@@ -644,6 +691,11 @@ class RTSPPlayerEngine(
         }
 
         return buildString {
+            if (isAuthError) {
+                append("RTSP 401 Unauthorized during SETUP/DESCRIBE. Source requires credentials (format: rtsp://username:password@host:port/path) | ")
+            } else if (isHostError) {
+                append("RTSP Host resolution failed (UnknownHostException). Check IP/domain and network connection | ")
+            }
 
             append(
                 error.message
@@ -672,6 +724,10 @@ class RTSPPlayerEngine(
         } catch (_: Exception) {
             // Player may already have been released.
         }
+
+        diagnosticsManager?.removeBoundaryStage(
+            com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
+        )
 
         _streamState.value =
             StreamState.Disconnected

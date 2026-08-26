@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -15,6 +16,16 @@ enum class FrameHealthState {
     FRAME_ACTIVE,
     FRAME_STALLED
 }
+
+/**
+ * Record of external milestone reported by hooked target processes.
+ */
+data class ExternalMilestoneEvent(
+    val stage: String,
+    val packageName: String,
+    val message: String,
+    val timestampMs: Long = System.currentTimeMillis()
+)
 
 /**
  * Shared in-memory frame bridge for zero-latency frame sharing across Zesto subsystems,
@@ -36,6 +47,9 @@ object ZestoFrameBridge {
 
     private val _latestFrame = MutableStateFlow(FrameData())
     val latestFrame: StateFlow<FrameData> = _latestFrame.asStateFlow()
+
+    private val _externalMilestones = MutableStateFlow<List<ExternalMilestoneEvent>>(emptyList())
+    val externalMilestones: StateFlow<List<ExternalMilestoneEvent>> = _externalMilestones.asStateFlow()
 
     private val frameCounter = AtomicLong(0L)
     private val deliveredCounter = AtomicLong(0L)
@@ -85,6 +99,16 @@ object ZestoFrameBridge {
             deliveredCounter.incrementAndGet()
         }
         return frame
+    }
+
+    /**
+     * Records an external milestone reported from a target process hook (e.g. Open Camera).
+     */
+    fun reportExternalMilestone(stage: String, packageName: String, message: String) {
+        Log.i(TAG, "[EXTERNAL_MILESTONE] [$stage] from $packageName: $message")
+        _externalMilestones.update { current ->
+            current + ExternalMilestoneEvent(stage, packageName, message)
+        }
     }
 
     fun recordDroppedFrame() {

@@ -16,7 +16,27 @@ class CompatibilityManager {
     private val profiles = mutableListOf<TargetProfile>()
 
     init {
-        // 1. Zesto Controlled Test Target (Self-contained test harness)
+        // 1. Open Camera (Primary Controlled Target Application)
+        profiles.add(
+            TargetProfile(
+                id = "open_camera",
+                appName = "Open Camera",
+                packageName = "net.sourceforge.opencamera",
+                cameraApi = CameraApiType.CAMERA2,
+                expectedPreviewPath = "CameraController2 (CameraDevice) / CameraController1 (Camera)",
+                supportedBackend = "Camera2Backend",
+                integrationMechanism = "LSPatch APK Patching / LSPosed Module",
+                requiredPermissions = listOf("android.permission.CAMERA"),
+                requiresInstrumentation = true,
+                requiresRoot = false,
+                requiresPrivilegedAccess = false,
+                knownLimitations = "Supports both Camera2 API and Original Camera API modes in Settings.",
+                diagnosticInfo = "Target hooks CameraManager.openCamera, CameraDevice.createCaptureSession, and Camera.setPreviewDisplay/Texture.",
+                testStatus = CameraVirtualizationStatus.NOT_TESTED
+            )
+        )
+
+        // 2. Zesto Controlled Test Target (Self-contained test harness)
         profiles.add(
             TargetProfile(
                 id = "zesto_controlled_test_app",

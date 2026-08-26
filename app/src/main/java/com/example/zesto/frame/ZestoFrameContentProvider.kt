@@ -7,6 +7,7 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
 
@@ -18,14 +19,19 @@ import java.util.concurrent.Executors
 class ZestoFrameContentProvider : ContentProvider() {
 
     companion object {
+        private const val TAG = "ZestoFrameProvider"
         const val AUTHORITY = "com.example.zesto.frameprovider"
         val CONTENT_URI: Uri = Uri.parse("content://$AUTHORITY/frame")
 
+        const val METHOD_GET_LATEST_FRAME = "getLatestFrame"
         const val METHOD_GET_FRAME_META = "getFrameMeta"
         const val METHOD_IS_STREAMING = "isStreaming"
         const val METHOD_GET_HEALTH_STATE = "getHealthState"
+        const val METHOD_REPORT_MILESTONE = "reportMilestone"
 
         const val KEY_FRAME_ID = "frame_id"
+        const val KEY_BITMAP = "bitmap"
+        const val KEY_BUFFER = "buffer"
         const val KEY_WIDTH = "width"
         const val KEY_HEIGHT = "height"
         const val KEY_TIMESTAMP_US = "timestamp_us"
@@ -38,7 +44,10 @@ class ZestoFrameContentProvider : ContentProvider() {
         private val pipeExecutor = Executors.newCachedThreadPool()
     }
 
-    override fun onCreate(): Boolean = true
+    override fun onCreate(): Boolean {
+        Log.i(TAG, "[ZESTO_PROCESS_INIT] ZestoFrameContentProvider initialized.")
+        return true
+    }
 
     override fun query(
         uri: Uri,
@@ -79,6 +88,22 @@ class ZestoFrameContentProvider : ContentProvider() {
         val buffer = frame.buffer
 
         when (method) {
+            METHOD_GET_LATEST_FRAME, "getFrameBitmap" -> {
+                result.putLong(KEY_FRAME_ID, frame.frameId)
+                result.putInt(KEY_WIDTH, frame.width)
+                result.putInt(KEY_HEIGHT, frame.height)
+                result.putLong(KEY_TIMESTAMP_US, frame.timestampUs)
+                result.putString(KEY_FORMAT, frame.format.name)
+                result.putString(KEY_HEALTH_STATE, health.name)
+                result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
+                result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE)
+                if (frame.bitmap != null) {
+                    result.putParcelable(KEY_BITMAP, frame.bitmap)
+                }
+                if (buffer != null) {
+                    result.putByteArray(KEY_BUFFER, buffer)
+                }
+            }
             METHOD_GET_FRAME_META -> {
                 result.putLong(KEY_FRAME_ID, frame.frameId)
                 result.putInt(KEY_WIDTH, frame.width)
@@ -96,6 +121,16 @@ class ZestoFrameContentProvider : ContentProvider() {
             METHOD_GET_HEALTH_STATE -> {
                 result.putString(KEY_HEALTH_STATE, health.name)
                 result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
+            }
+            METHOD_REPORT_MILESTONE -> {
+                val stage = arg ?: extras?.getString("stage") ?: "UNKNOWN"
+                val pkg = extras?.getString("package_name") ?: "UNKNOWN"
+                val msg = extras?.getString("message") ?: ""
+                ZestoFrameBridge.reportExternalMilestone(stage, pkg, msg)
+                result.putBoolean("success", true)
+            }
+            else -> {
+                Log.w(TAG, "Unknown method called: $method")
             }
         }
         return result
@@ -131,4 +166,3 @@ class ZestoFrameContentProvider : ContentProvider() {
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 }
-

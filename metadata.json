@@ -1,6 +1,10 @@
 {
   "name": "Zesto",
-  "description": "Modular Android video-input and camera-virtualization framework.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "description": "Modular video-input and camera-virtualization control suite with RTSP stream config, live preview, diagnostics telemetry, and target compatibility matrix.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

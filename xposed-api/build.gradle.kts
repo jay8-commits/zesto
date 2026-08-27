@@ -1,18 +1,37 @@
 plugins {
-    alias(libs.plugins.android.application) apply false
-    id("com.android.library")
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
 }
 
 android {
-    namespace = "de.robv.android.xposed"
-    compileSdk { version = release(36) { minorApiLevel = 1 } }
+    namespace = "com.zesto.xposed"
+    compileSdk = 35
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 26
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles("consumer-rules.pro")
     }
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    compileOnly(libs.xposed.api)
+    implementation(libs.androidx.core.ktx)
 }

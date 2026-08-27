@@ -1,3 +1,4 @@
+```kotlin
 package com.example.zesto.stream
 
 import android.graphics.Bitmap
@@ -16,7 +17,6 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Headless, off-screen OpenGL ES 2.0 frame extractor for ExoPlayer MediaCodec output.
@@ -26,7 +26,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class OffscreenFrameExtractor(
     private var videoWidth: Int = 1280,
     private var videoHeight: Int = 720,
-    private val onFrameDecoded: (bitmap: Bitmap, width: Int, height: Int, timestampUs: Long) -> Unit
+    private val onFrameDecoded: (
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        timestampUs: Long
+    ) -> Unit
 ) {
     companion object {
         private const val TAG = "OffscreenFrameExtractor"
@@ -36,6 +41,7 @@ class OffscreenFrameExtractor(
             attribute vec4 aTextureCoord;
             varying vec2 vTextureCoord;
             uniform mat4 uSTMatrix;
+
             void main() {
                 gl_Position = aPosition;
                 vTextureCoord = (uSTMatrix * aTextureCoord).xy;
@@ -45,8 +51,10 @@ class OffscreenFrameExtractor(
         private const val FRAGMENT_SHADER_CODE = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
+
             varying vec2 vTextureCoord;
             uniform samplerExternalOES sTexture;
+
             void main() {
                 gl_FragColor = texture2D(sTexture, vTextureCoord);
             }
@@ -88,13 +96,26 @@ class OffscreenFrameExtractor(
     private var sTextureHandle: Int = 0
 
     private val stMatrix = FloatArray(16)
+
     private var vertexBuffer: FloatBuffer? = null
     private var textureBuffer: FloatBuffer? = null
     private var pixelBuffer: ByteBuffer? = null
     private var reusableBitmap: Bitmap? = null
 
-    private val isInitialized = AtomicBoolean(false)
-    private val isReleased = AtomicBoolean(false)
+    /*
+     * Volatile flags are used instead of AtomicBoolean.
+     *
+     * This avoids the Kotlin compilation problem caused by calls such as
+     * isReleased.get() and isReleased.compareAndSet(...).
+     *
+     * The flags can be read safely across the GL thread and the caller thread.
+     */
+    @Volatile
+    private var isInitialized = false
+
+    @Volatile
+    private var isReleased = false
+
     private var frameCount = 0L
 
     init {
@@ -105,8 +126,12 @@ class OffscreenFrameExtractor(
         get() = outputSurface
 
     private fun initGlThread() {
-        val thread = HandlerThread("ZestoGlFrameExtractor").apply { start() }
+        val thread = HandlerThread("ZestoGlFrameExtractor").apply {
+            start()
+        }
+
         glThread = thread
+
         val handler = Handler(thread.looper)
         glHandler = handler
 
@@ -120,8 +145,10 @@ class OffscreenFrameExtractor(
                 initSurfaceTexture()
                 initFBO(videoWidth, videoHeight)
                 initBuffers()
+
                 initSuccess = true
-                isInitialized.set(true)
+                isInitialized = true
+
                 Log.i(
                     TAG,
                     "[GL_EXTRACTOR_INITIALIZED] Offscreen GL frame extractor ready: ${videoWidth}x${videoHeight}"
@@ -140,17 +167,27 @@ class OffscreenFrameExtractor(
         }
 
         synchronized(initLock) {
-            if (!isInitialized.get()) {
+            if (!isInitialized) {
                 try {
                     initLock.wait(2000)
                 } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
                 }
             }
+        }
+
+        if (!initSuccess && !isInitialized) {
+            Log.w(
+                TAG,
+                "[GL_EXTRACTOR_INIT_TIMEOUT] GL extractor initialization did not complete within timeout"
+            )
         }
     }
 
     private fun initEGL() {
-        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        eglDisplay = EGL14.eglGetDisplay(
+            EGL14.EGL_DEFAULT_DISPLAY
+        )
 
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) {
             throw RuntimeException(
@@ -160,7 +197,8 @@ class OffscreenFrameExtractor(
 
         val version = IntArray(2)
 
-        if (!EGL14.eglInitialize(
+        if (
+            !EGL14.eglInitialize(
                 eglDisplay,
                 version,
                 0,
@@ -188,7 +226,8 @@ class OffscreenFrameExtractor(
         val configs = arrayOfNulls<EGLConfig>(1)
         val numConfigs = IntArray(1)
 
-        if (!EGL14.eglChooseConfig(
+        if (
+            !EGL14.eglChooseConfig(
                 eglDisplay,
                 attribList,
                 0,
@@ -197,7 +236,8 @@ class OffscreenFrameExtractor(
                 configs.size,
                 numConfigs,
                 0
-            ) || numConfigs[0] == 0
+            ) ||
+            numConfigs[0] == 0
         ) {
             throw RuntimeException(
                 "eglChooseConfig failed: ${EGL14.eglGetError()}"
@@ -246,7 +286,8 @@ class OffscreenFrameExtractor(
             )
         }
 
-        if (!EGL14.eglMakeCurrent(
+        if (
+            !EGL14.eglMakeCurrent(
                 eglDisplay,
                 eglSurface,
                 eglSurface,
@@ -272,8 +313,16 @@ class OffscreenFrameExtractor(
 
         programId = GLES20.glCreateProgram()
 
-        GLES20.glAttachShader(programId, vShader)
-        GLES20.glAttachShader(programId, fShader)
+        GLES20.glAttachShader(
+            programId,
+            vShader
+        )
+
+        GLES20.glAttachShader(
+            programId,
+            fShader
+        )
+
         GLES20.glLinkProgram(programId)
 
         val linkStatus = IntArray(1)
@@ -286,9 +335,13 @@ class OffscreenFrameExtractor(
         )
 
         if (linkStatus[0] != GLES20.GL_TRUE) {
-            val error = GLES20.glGetProgramInfoLog(programId)
+            val error = GLES20.glGetProgramInfoLog(
+                programId
+            )
 
-            GLES20.glDeleteProgram(programId)
+            GLES20.glDeleteProgram(
+                programId
+            )
 
             throw RuntimeException(
                 "GL Program link failed: $error"
@@ -356,7 +409,9 @@ class OffscreenFrameExtractor(
     }
 
     private fun initSurfaceTexture() {
-        val st = SurfaceTexture(oesTextureId).apply {
+        val st = SurfaceTexture(
+            oesTextureId
+        ).apply {
 
             setDefaultBufferSize(
                 videoWidth,
@@ -364,7 +419,7 @@ class OffscreenFrameExtractor(
             )
 
             setOnFrameAvailableListener({
-                if (!isReleased.get()) {
+                if (!isReleased) {
                     glHandler?.post {
                         processFrame()
                     }
@@ -576,7 +631,7 @@ class OffscreenFrameExtractor(
 
     private fun processFrame() {
         if (
-            isReleased.get() ||
+            isReleased ||
             eglDisplay == EGL14.EGL_NO_DISPLAY
         ) {
             return
@@ -614,7 +669,9 @@ class OffscreenFrameExtractor(
                 GLES20.GL_COLOR_BUFFER_BIT
             )
 
-            GLES20.glUseProgram(programId)
+            GLES20.glUseProgram(
+                programId
+            )
 
             vertexBuffer?.position(0)
 
@@ -758,7 +815,9 @@ class OffscreenFrameExtractor(
             shaderCode
         )
 
-        GLES20.glCompileShader(shader)
+        GLES20.glCompileShader(
+            shader
+        )
 
         val compiled = IntArray(1)
 
@@ -771,9 +830,13 @@ class OffscreenFrameExtractor(
 
         if (compiled[0] == 0) {
             val error =
-                GLES20.glGetShaderInfoLog(shader)
+                GLES20.glGetShaderInfoLog(
+                    shader
+                )
 
-            GLES20.glDeleteShader(shader)
+            GLES20.glDeleteShader(
+                shader
+            )
 
             throw RuntimeException(
                 "Shader compilation failed: $error"
@@ -784,12 +847,9 @@ class OffscreenFrameExtractor(
     }
 
     fun release() {
-        if (
-            isReleased.compareAndSet(
-                false,
-                true
-            )
-        ) {
+        if (!isReleased) {
+            isReleased = true
+
             glHandler?.post {
                 try {
                     EGL14.eglMakeCurrent(
@@ -885,3 +945,4 @@ class OffscreenFrameExtractor(
         }
     }
 }
+```

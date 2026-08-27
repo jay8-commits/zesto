@@ -1,7 +1,9 @@
 package com.example.zesto.stream
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.util.Log
 import android.view.Surface
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
@@ -15,6 +17,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.example.zesto.decoder.DecoderState
 import com.example.zesto.decoder.DecoderStats
+import com.example.zesto.frame.FrameSourceMode
 import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
 import kotlinx.coroutines.CoroutineScope
@@ -121,6 +124,37 @@ class RTSPPlayerEngine(
 
     fun setFrameListener(listener: ((VideoFrame) -> Unit)?) {
         this.frameListener = listener
+    }
+
+    /**
+     * Authoritative frame delivery from hardware/software decoder into the frame pipeline.
+     */
+    fun deliverDecodedFrame(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        timestampUs: Long = System.nanoTime() / 1000L
+    ) {
+        val count = renderedFramesCount.incrementAndGet()
+        framesSinceLastFps++
+        if (width > 0) currentVideoWidth = width
+        if (height > 0) currentVideoHeight = height
+
+        if (count == 1L || count % 60L == 0L) {
+            Log.i(TAG, "[RTSP_FRAME_DECODED] id=$count width=$width height=$height")
+            diagnosticsManager?.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED)
+        }
+
+        val frame = VideoFrame(
+            frameNumber = count,
+            timestampUs = timestampUs,
+            width = width,
+            height = height,
+            pixelFormat = PixelFormat.RGBA_8888,
+            bitmap = bitmap,
+            sourceMode = FrameSourceMode.RTSP
+        )
+        frameListener?.invoke(frame)
     }
 
     private fun initializePlayer() {
@@ -915,5 +949,9 @@ class RTSPPlayerEngine(
 
         _streamStats.value =
             StreamStats()
+    }
+
+    companion object {
+        private const val TAG = "RTSPPlayerEngine"
     }
 }

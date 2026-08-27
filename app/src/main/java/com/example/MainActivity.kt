@@ -277,7 +277,8 @@ fun ZestoApp(
                     PreviewScreen(
                         uiState = uiState,
                         onStartDecoder = viewModel::startDecoderAndPipeline,
-                        onStopDecoder = viewModel::stopDecoderAndPipeline
+                        onStopDecoder = viewModel::stopDecoderAndPipeline,
+                        onFrameDecoded = viewModel::onFrameDecodedFromPreview
                     )
                 }
                 ZestoTab.DIAGNOSTICS -> {

@@ -76,7 +76,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
     private class BridgeFrameConsumer(private val diagnosticsManager: DiagnosticsManager) : FrameConsumer {
         override val consumerId: String = "bridge_consumer"
-        override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
+        override val preferredFormat: PixelFormat = PixelFormat.RGBA_8888
 
         override fun onConsumerAttached(provider: FrameProvider) {}
 
@@ -87,12 +87,18 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 format = frame.pixelFormat,
                 buffer = frame.buffer?.array(),
                 bitmap = frame.bitmap,
-                timestampUs = frame.timestampUs
+                timestampUs = frame.timestampUs,
+                sourceMode = frame.sourceMode,
+                externalFrameId = frame.frameNumber
             )
             diagnosticsManager.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED)
         }
 
         override fun onConsumerDetached() {}
+    }
+
+    fun onFrameDecodedFromPreview(bitmap: android.graphics.Bitmap, width: Int, height: Int) {
+        rtspPlayerEngine.deliverDecodedFrame(bitmap, width, height)
     }
 
     init {

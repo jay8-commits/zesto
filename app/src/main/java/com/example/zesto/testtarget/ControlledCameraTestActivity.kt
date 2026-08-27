@@ -304,13 +304,18 @@ fun ControlledCameraTestScreen(
                         try {
                             virtualFramesInSecond++
                             activeResolution = "${frame.width} x ${frame.height}"
+                            val frameId = if (frame.frameId > 0) frame.frameId else frameCount
+                            if (frameId == 1L || frameId % 60L == 0L) {
+                                Log.i("ControlledCameraTest", "[TARGET_HARNESS_FRAME] id=$frameId width=${frame.width} height=${frame.height} source=${frame.sourceMode} hasBitmap=${frame.bitmap != null}")
+                            }
                             com.example.zesto.frame.ZestoFrameTransformer.renderToCanvas(
                                 canvas = canvas,
                                 bitmap = frame.bitmap,
                                 targetPackage = targetPackage,
-                                frameId = if (frame.frameId > 0) frame.frameId else frameCount,
+                                frameId = frameId,
                                 healthState = healthState.name,
-                                cropMode = com.example.zesto.frame.FrameCropMode.CENTER_CROP_9_16
+                                cropMode = com.example.zesto.frame.FrameCropMode.CENTER_CROP_9_16,
+                                fps = measuredFps
                             )
                         } finally {
                             tv.unlockCanvasAndPost(canvas)
@@ -439,8 +444,19 @@ fun ControlledCameraTestScreen(
                                 .border(1.dp, if (isVirtualInjectionActive) ElegantDarkTertiary else Color.White.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
+                            val currentMode = ZestoFrameBridge.latestFrame.value.sourceMode
+                            val currentFrameId = ZestoFrameBridge.latestFrame.value.frameId
+                            val badgeText = if (isVirtualInjectionActive) {
+                                if (currentMode == com.example.zesto.frame.FrameSourceMode.RTSP) {
+                                    "SOURCE: RTSP STREAM (FRAME #$currentFrameId)"
+                                } else {
+                                    "SOURCE: TEST PATTERN (FRAME #$currentFrameId)"
+                                }
+                            } else {
+                                "SOURCE: PHYSICAL CAMERA2 SENSOR"
+                            }
                             Text(
-                                text = if (isVirtualInjectionActive) "SOURCE: ZESTO OBS INJECTION" else "SOURCE: PHYSICAL CAMERA2 SENSOR",
+                                text = badgeText,
                                 color = if (isVirtualInjectionActive) ElegantDarkTertiary else Color.White,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,

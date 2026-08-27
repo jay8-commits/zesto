@@ -1,5 +1,9 @@
 package com.example.zesto.ui
 
+import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
+import android.util.Log
+import android.view.TextureView
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,8 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.example.ui.theme.ElegantDarkBackground
 import com.example.ui.theme.ElegantDarkOnPrimary
 import com.example.ui.theme.ElegantDarkOutlineVariant
@@ -50,6 +52,7 @@ import com.example.ui.theme.ElegantDarkSurfaceVariant
 import com.example.ui.theme.ElegantDarkTertiary
 import com.example.ui.theme.ElegantDarkTextPrimary
 import com.example.ui.theme.ElegantDarkTextSecondary
+import com.example.zesto.frame.ZestoFrameBridge
 import java.util.Locale
 
 @OptIn(UnstableApi::class)
@@ -58,6 +61,7 @@ fun PreviewScreen(
     uiState: ZestoUiState,
     onStartDecoder: () -> Unit,
     onStopDecoder: () -> Unit,
+    onFrameDecoded: ((Bitmap, Int, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -70,7 +74,7 @@ fun PreviewScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Stream Preview Viewport - 9:16 Portrait Canvas
+        // Stream Preview Viewport - Authoritative Decoded Video Canvas
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -82,19 +86,39 @@ fun PreviewScreen(
             contentAlignment = Alignment.Center
         ) {
             if (isLiveVideoActive) {
-                // Real Live Video Rendering via Hardware-Accelerated PlayerView with 9:16 / Fit centering
+                // Real Live Video Rendering via Hardware-Accelerated TextureView
                 AndroidView(
                     factory = { context ->
-                        PlayerView(context).apply {
-                            player = uiState.player
-                            useController = false
-                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                            setBackgroundColor(android.graphics.Color.BLACK)
+                        TextureView(context).apply {
+                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                                    uiState.player?.setVideoTextureView(this@apply)
+                                    Log.i("PreviewScreen", "[TEXTURE_SURFACE_AVAILABLE] TextureView attached to ExoPlayer (${width}x${height})")
+                                }
+
+                                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
+
+                                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                    uiState.player?.clearVideoTextureView(this@apply)
+                                    return true
+                                }
+
+                                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                                    val bmp = bitmap
+                                    if (bmp != null && !bmp.isRecycled) {
+                                        onFrameDecoded?.invoke(bmp, bmp.width, bmp.height)
+                                        val id = ZestoFrameBridge.latestFrame.value.frameId
+                                        if (id == 1L || id % 60L == 0L) {
+                                            Log.i("PreviewScreen", "[ZESTO_PREVIEW_RENDERED] id=$id dimensions=${bmp.width}x${bmp.height}")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     },
-                    update = { playerView ->
-                        if (playerView.player != uiState.player) {
-                            playerView.player = uiState.player
+                    update = { textureView ->
+                        if (uiState.player != null) {
+                            uiState.player?.setVideoTextureView(textureView)
                         }
                     },
                     modifier = Modifier.fillMaxSize()

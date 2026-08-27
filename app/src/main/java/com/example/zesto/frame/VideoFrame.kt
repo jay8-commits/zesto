@@ -4,6 +4,14 @@ import android.graphics.Bitmap
 import java.nio.ByteBuffer
 
 /**
+ * Explicit frame source modes for authoritative pipeline selection.
+ */
+enum class FrameSourceMode {
+    RTSP,
+    TEST_PATTERN
+}
+
+/**
  * Pixel format types for video frames.
  */
 enum class PixelFormat(val description: String, val bytesPerPixel: Float) {
@@ -28,7 +36,8 @@ data class VideoFrame(
     val rotationDegrees: Int = 0,
     val buffer: ByteBuffer? = null,
     val stride: Int = width,
-    val bitmap: Bitmap? = null
+    val bitmap: Bitmap? = null,
+    val sourceMode: FrameSourceMode = FrameSourceMode.RTSP
 ) {
     fun hasBuffer(): Boolean = buffer != null && buffer.remaining() > 0
 

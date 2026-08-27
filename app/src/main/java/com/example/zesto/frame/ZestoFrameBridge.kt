@@ -53,15 +53,19 @@ object ZestoFrameBridge {
         val frameId: Long = 0L,
         val timestampUs: Long = 0L,
         val timestampEpochMs: Long = 0L,
-        val width: Int = 1080,
-        val height: Int = 1920,
+        val width: Int = 1280,
+        val height: Int = 720,
         val format: PixelFormat = PixelFormat.RGBA_8888,
         val buffer: ByteArray? = null,
-        val bitmap: Bitmap? = null
+        val bitmap: Bitmap? = null,
+        val sourceMode: FrameSourceMode = FrameSourceMode.RTSP
     )
 
     private val _latestFrame = MutableStateFlow(FrameData())
     val latestFrame: StateFlow<FrameData> = _latestFrame.asStateFlow()
+
+    private val _sourceMode = MutableStateFlow(FrameSourceMode.RTSP)
+    val sourceMode: StateFlow<FrameSourceMode> = _sourceMode.asStateFlow()
 
     private val _pipelineState = MutableStateFlow(PipelineLifecycleState.IDLE)
     val pipelineState: StateFlow<PipelineLifecycleState> = _pipelineState.asStateFlow()
@@ -88,11 +92,17 @@ object ZestoFrameBridge {
     val reconnectCount: Int get() = reconnectCounter.get()
     val isProviderRunning: Boolean get() = providerRunning.get()
     val isBridgeReady: Boolean get() = bridgeReady.get()
-    val isTestPatternMode: Boolean get() = localTestPatternActive.get()
+    val isTestPatternMode: Boolean get() = _sourceMode.value == FrameSourceMode.TEST_PATTERN || localTestPatternActive.get()
+
+    fun setSourceMode(mode: FrameSourceMode) {
+        _sourceMode.value = mode
+        localTestPatternActive.set(mode == FrameSourceMode.TEST_PATTERN)
+        Log.i(TAG, "[SOURCE_MODE_CHANGED] Frame source mode explicitly set to: $mode")
+    }
 
     fun setTestPatternMode(enabled: Boolean) {
-        localTestPatternActive.set(enabled)
-        Log.i(TAG, "[TEST_PATTERN_MODE] Universal 30 FPS Local Test Pattern Generator set to: $enabled")
+        val mode = if (enabled) FrameSourceMode.TEST_PATTERN else FrameSourceMode.RTSP
+        setSourceMode(mode)
     }
 
     fun calculateBridgeFps(): Double {
@@ -139,7 +149,7 @@ object ZestoFrameBridge {
     }
 
     /**
-     * Updates the shared bridge with a newly decoded frame.
+     * Updates the shared bridge with a newly decoded frame from the authoritative source.
      */
     fun postFrame(
         width: Int,
@@ -147,12 +157,18 @@ object ZestoFrameBridge {
         format: PixelFormat = PixelFormat.RGBA_8888,
         buffer: ByteArray? = null,
         bitmap: Bitmap? = null,
-        timestampUs: Long = System.nanoTime() / 1000
+        timestampUs: Long = System.nanoTime() / 1000,
+        sourceMode: FrameSourceMode = _sourceMode.value,
+        externalFrameId: Long? = null
     ) {
         val nowMs = System.currentTimeMillis()
         lastFrameTimeMs.set(nowMs)
         recentFrameTimestamps.offer(nowMs)
-        val id = frameCounter.incrementAndGet()
+        val id = externalFrameId ?: frameCounter.incrementAndGet()
+        if (externalFrameId != null) {
+            frameCounter.set(id.coerceAtLeast(frameCounter.get()))
+        }
+
         _latestFrame.value = FrameData(
             frameId = id,
             timestampUs = timestampUs,
@@ -161,7 +177,8 @@ object ZestoFrameBridge {
             height = height,
             format = format,
             buffer = buffer,
-            bitmap = bitmap
+            bitmap = bitmap,
+            sourceMode = sourceMode
         )
         if (_pipelineState.value != PipelineLifecycleState.STREAMING) {
             _pipelineState.value = PipelineLifecycleState.STREAMING
@@ -171,7 +188,7 @@ object ZestoFrameBridge {
         }
         if (id == 1L || id % 60L == 0L) {
             Log.i(TAG, "[FRAME_GENERATED] id=$id")
-            Log.i(TAG, "[FRAME_BRIDGE_POSTED] id=$id")
+            Log.i(TAG, "[FRAME_BRIDGE_POSTED] id=$id (source=$sourceMode, ${width}x${height}, hasBitmap=${bitmap != null})")
             Log.i(TAG, "[FRAME_INJECTED] Frame #$id (${width}x${height}, format=$format) injected into bridge")
             Log.i(TAG, "[FRAME_PIPELINE] frames received=$id, frames delivered=${deliveredCounter.get()}, frames dropped=${droppedCounter.get()}, queue depth=1")
         }

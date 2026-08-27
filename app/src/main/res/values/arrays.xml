@@ -1,0 +1,13 @@
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.zesto.app</item>
+        <item>net.sourceforge.opencamera</item>
+        <item>com.discord</item>
+        <item>com.whatsapp</item>
+        <item>us.zoom.videomeetings</item>
+        <item>com.google.android.apps.meetings</item>
+        <item>org.telegram.messenger</item>
+        <item>com.instagram.android</item>
+        <item>com.snapchat.android</item>
+    </string-array>
+</resources>

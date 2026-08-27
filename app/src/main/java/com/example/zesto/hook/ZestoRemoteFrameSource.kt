@@ -118,16 +118,40 @@ object ZestoRemoteFrameSource {
         return try {
             val bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
             if (bundle != null) {
+                try {
+                    bundle.classLoader = Bitmap::class.java.classLoader
+                } catch (_: Throwable) {}
+
                 val providerRunning = bundle.getBoolean("provider_running", true)
                 val isStreaming = bundle.getBoolean("is_streaming", false)
                 val healthState = bundle.getString("health_state", "NO_FRAME")
-                val bitmap = bundle.getParcelable<Bitmap>("bitmap")
+                val bitmap: Bitmap? = try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        bundle.getParcelable("bitmap", Bitmap::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        bundle.getParcelable<Bitmap>("bitmap")
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Error unmarshalling bitmap from bundle: ${e.message}")
+                    null
+                }
+
                 val frameId = bundle.getLong("frame_id", 0L)
                 val width = bundle.getInt("width", 1080)
                 val height = bundle.getInt("height", 1920)
                 val timestampUs = bundle.getLong("timestamp_us", 0L)
                 val buffer = bundle.getByteArray("buffer")
-                val bufferSize = buffer?.size ?: (if (bitmap != null) bitmap.byteCount else 0)
+                
+                val finalBitmap = bitmap ?: buffer?.let { buf ->
+                    try {
+                        android.graphics.BitmapFactory.decodeByteArray(buf, 0, buf.size)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+
+                val bufferSize = buffer?.size ?: (if (finalBitmap != null) finalBitmap.byteCount else 0)
 
                 if (!isProviderAvailable) {
                     isProviderAvailable = true
@@ -140,14 +164,14 @@ object ZestoRemoteFrameSource {
                     Log.i(TAG, "[FRAME_IPC_RETURNED] id=$frameId")
                     Log.i(TAG, "[IPC_FRAME_REQUEST] target=$attachedPackageName requested frame via ContentResolver.call")
                     Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=$frameId dimensions=${width}x${height} format=${bundle.getString("format", "RGBA_8888")}")
-                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${bitmap != null}")
+                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${finalBitmap != null}")
                     Log.i(TAG, "[IPC_FRAME_TIMESTAMP] timestampUs=${timestampUs}us health=$healthState")
                     Log.i(TAG, "[IPC_FRAME_COUNTER] bridgeFrameId=$frameId targetPackage=$attachedPackageName")
                 }
 
                 RemoteFrameResult(
                     frameId = frameId,
-                    bitmap = bitmap,
+                    bitmap = finalBitmap,
                     width = width,
                     height = height,
                     healthState = healthState ?: "NO_FRAME",

@@ -32,11 +32,49 @@ class ExampleUnitTest {
     @Test
     fun testStreamConfigDefaults() {
         val config = StreamConfig()
-        assertEquals(1280, config.targetWidth)
-        assertEquals(720, config.targetHeight)
+        assertEquals(1080, config.targetWidth)
+        assertEquals(1920, config.targetHeight)
         assertEquals(30, config.targetFps)
         assertEquals(TransportProtocol.RTSP_TCP, config.protocol)
         assertTrue(config.autoReconnect)
+    }
+
+    @Test
+    fun testZestoFrameTransformer9x16CenterCrop() {
+        // Test 1: 9:16 source into 9:16 canvas (exact match)
+        val metrics1 = com.example.zesto.frame.ZestoFrameTransformer.calculateCropRect(1080, 1920, 1080, 1920)
+        assertEquals(0, metrics1.cropX)
+        assertEquals(0, metrics1.cropY)
+        assertEquals(1080, metrics1.dstWidth)
+        assertEquals(1920, metrics1.dstHeight)
+        assertEquals(1.0f, metrics1.scale, 0.001f)
+
+        // Test 2: 9:16 source into taller 20:9 phone screen (1080x2400)
+        val metrics2 = com.example.zesto.frame.ZestoFrameTransformer.calculateCropRect(1080, 1920, 1080, 2400)
+        assertEquals(0, metrics2.cropY) // No vertical black gaps!
+        assertEquals(2400, metrics2.dstHeight)
+        assertTrue(metrics2.scale >= 1.25f)
+
+        // Test 3: Aspect ratio string detection
+        assertEquals("9:16", com.example.zesto.frame.ZestoFrameTransformer.getAspectRatioString(1080, 1920))
+        assertEquals("16:9", com.example.zesto.frame.ZestoFrameTransformer.getAspectRatioString(1920, 1080))
+    }
+
+    @Test
+    fun testProviderLifecycleStartupReady() {
+        com.example.zesto.frame.ZestoFrameBridge.setProviderRunning(true)
+        com.example.zesto.frame.ZestoFrameBridge.setBridgeReady(true)
+        assertTrue(com.example.zesto.frame.ZestoFrameBridge.isProviderRunning)
+        assertTrue(com.example.zesto.frame.ZestoFrameBridge.isBridgeReady)
+    }
+
+    @Test
+    fun testGenericTargetPackageSupport() {
+        val testPackages = listOf("net.sourceforge.opencamera", "com.discord", "com.google.android.talk", "com.custom.camera.app")
+        for (pkg in testPackages) {
+            com.example.zesto.hook.ZestoRemoteFrameSource.setAttachedPackage(pkg)
+            assertEquals(pkg, com.example.zesto.hook.ZestoRemoteFrameSource.getAttachedPackage())
+        }
     }
 
     @Test

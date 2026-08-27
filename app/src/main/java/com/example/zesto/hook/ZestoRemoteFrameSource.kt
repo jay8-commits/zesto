@@ -16,8 +16,8 @@ import com.example.zesto.frame.ZestoFrameTransformer
 data class RemoteFrameResult(
     val frameId: Long = 0L,
     val bitmap: Bitmap? = null,
-    val width: Int = 1280,
-    val height: Int = 720,
+    val width: Int = 1080,
+    val height: Int = 1920,
     val healthState: String = "NO_FRAME",
     val isStreaming: Boolean = false
 )
@@ -108,8 +108,8 @@ object ZestoRemoteFrameSource {
             return RemoteFrameResult(
                 frameId = 0L,
                 bitmap = null,
-                width = 1280,
-                height = 720,
+                width = 1080,
+                height = 1920,
                 healthState = "AWAITING_ZESTO_PROVIDER",
                 isStreaming = false
             )
@@ -123,8 +123,8 @@ object ZestoRemoteFrameSource {
                 val healthState = bundle.getString("health_state", "NO_FRAME")
                 val bitmap = bundle.getParcelable<Bitmap>("bitmap")
                 val frameId = bundle.getLong("frame_id", 0L)
-                val width = bundle.getInt("width", 1280)
-                val height = bundle.getInt("height", 720)
+                val width = bundle.getInt("width", 1080)
+                val height = bundle.getInt("height", 1920)
 
                 if (!isProviderAvailable) {
                     isProviderAvailable = true

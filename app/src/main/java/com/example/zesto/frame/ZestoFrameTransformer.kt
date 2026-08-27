@@ -27,9 +27,9 @@ data class FramePipelineDiagnostics(
     val moduleState: String = "INITIALIZED",
     val hookState: String = "HOOK_REGISTERED",
     val sourceState: String = "IDLE",
-    val sourceResolution: String = "1280x720",
+    val sourceResolution: String = "1080x1920",
     val outputResolution: String = "1080x1920",
-    val sourceAspectRatio: String = "16:9",
+    val sourceAspectRatio: String = "9:16",
     val outputAspectRatio: String = "9:16",
     val rotationDegrees: Int = 0,
     val cropMode: FrameCropMode = FrameCropMode.CENTER_CROP_9_16,
@@ -40,12 +40,30 @@ data class FramePipelineDiagnostics(
 )
 
 /**
+ * Result details from calculating frame scaling and center-crop rectangles.
+ */
+data class FrameTransformMetrics(
+    val srcRect: Rect,
+    val dstRect: Rect,
+    val scale: Float,
+    val cropX: Int,
+    val cropY: Int,
+    val srcWidth: Int,
+    val srcHeight: Int,
+    val dstWidth: Int,
+    val dstHeight: Int,
+    val sourceAspectStr: String,
+    val targetAspectStr: String,
+    val rotationApplied: Int = 0
+)
+
+/**
  * Canonical Frame Transformation and Rendering Engine.
  *
  * Guarantees that both the Zesto Test Harness and hooked camera target applications
  * (e.g. Open Camera, Camera2, Camera1, CameraX) receive identical frame transformations,
  * orientation normalization, aspect-ratio cropping, and true 9:16 portrait rendering
- * without distortion or stretching.
+ * without distortion, stretching, or unwanted black gaps at top or bottom.
  */
 object ZestoFrameTransformer {
     private const val TAG = "ZestoFrameTransformer"
@@ -57,8 +75,8 @@ object ZestoFrameTransformer {
     private val renderPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     /**
-     * Calculates the exact source crop rectangle to match the target canvas aspect ratio
-     * without distortion or stretching.
+     * Calculates the exact source crop rectangle and scale factor to fill the target canvas
+     * using an aspect-ratio-preserving Center-Crop strategy (no top/bottom gaps, no distortion).
      */
     fun calculateCropRect(
         srcWidth: Int,
@@ -66,37 +84,85 @@ object ZestoFrameTransformer {
         dstWidth: Int,
         dstHeight: Int,
         mode: FrameCropMode = FrameCropMode.CENTER_CROP_9_16
-    ): Pair<Rect, Rect> {
+    ): FrameTransformMetrics {
         if (srcWidth <= 0 || srcHeight <= 0 || dstWidth <= 0 || dstHeight <= 0) {
             val sRect = Rect(0, 0, srcWidth.coerceAtLeast(1), srcHeight.coerceAtLeast(1))
             val dRect = Rect(0, 0, dstWidth.coerceAtLeast(1), dstHeight.coerceAtLeast(1))
-            return Pair(sRect, dRect)
+            return FrameTransformMetrics(
+                srcRect = sRect,
+                dstRect = dRect,
+                scale = 1.0f,
+                cropX = 0,
+                cropY = 0,
+                srcWidth = srcWidth,
+                srcHeight = srcHeight,
+                dstWidth = dstWidth,
+                dstHeight = dstHeight,
+                sourceAspectStr = "UNKNOWN",
+                targetAspectStr = "UNKNOWN"
+            )
         }
 
         val dstRect = Rect(0, 0, dstWidth, dstHeight)
+        val sourceAspectStr = getAspectRatioString(srcWidth, srcHeight)
+        val targetAspectStr = getAspectRatioString(dstWidth, dstHeight)
 
         if (mode == FrameCropMode.STRETCH_FULL) {
-            return Pair(Rect(0, 0, srcWidth, srcHeight), dstRect)
+            val scaleX = dstWidth.toFloat() / srcWidth.toFloat()
+            return FrameTransformMetrics(
+                srcRect = Rect(0, 0, srcWidth, srcHeight),
+                dstRect = dstRect,
+                scale = scaleX,
+                cropX = 0,
+                cropY = 0,
+                srcWidth = srcWidth,
+                srcHeight = srcHeight,
+                dstWidth = dstWidth,
+                dstHeight = dstHeight,
+                sourceAspectStr = sourceAspectStr,
+                targetAspectStr = targetAspectStr
+            )
         }
 
         val targetRatio = dstWidth.toFloat() / dstHeight.toFloat()
         val sourceRatio = srcWidth.toFloat() / srcHeight.toFloat()
 
-        val srcRect = if (sourceRatio > targetRatio) {
-            // Source is wider than destination (e.g. 16:9 source into 9:16 destination)
-            // Crop width to match destination aspect ratio
-            val cropWidth = (srcHeight * targetRatio).toInt()
-            val left = ((srcWidth - cropWidth) / 2).coerceAtLeast(0)
-            Rect(left, 0, (left + cropWidth).coerceAtMost(srcWidth), srcHeight)
+        val srcRect: Rect
+        val cropX: Int
+        val cropY: Int
+        val scale: Float
+
+        if (sourceRatio > targetRatio) {
+            // Source is wider than target relative to height (e.g. 9:16 source into 9:20 tall phone screen)
+            // Scale to match target height, and crop horizontal sides to eliminate vertical black gaps
+            scale = dstHeight.toFloat() / srcHeight.toFloat()
+            val cropWidth = (srcHeight * targetRatio).toInt().coerceIn(1, srcWidth)
+            cropX = ((srcWidth - cropWidth) / 2).coerceAtLeast(0)
+            cropY = 0
+            srcRect = Rect(cropX, 0, (cropX + cropWidth).coerceAtMost(srcWidth), srcHeight)
         } else {
-            // Source is taller than destination
-            // Crop height to match destination aspect ratio
-            val cropHeight = (srcWidth / targetRatio).toInt()
-            val top = ((srcHeight - cropHeight) / 2).coerceAtLeast(0)
-            Rect(0, top, srcWidth, (top + cropHeight).coerceAtMost(srcHeight))
+            // Source is taller than target relative to width (e.g. 9:16 source into 3:4 or wider target)
+            // Scale to match target width, and crop vertical ends to eliminate horizontal black gaps
+            scale = dstWidth.toFloat() / srcWidth.toFloat()
+            val cropHeight = (srcWidth / targetRatio).toInt().coerceIn(1, srcHeight)
+            cropX = 0
+            cropY = ((srcHeight - cropHeight) / 2).coerceAtLeast(0)
+            srcRect = Rect(0, cropY, srcWidth, (cropY + cropHeight).coerceAtMost(srcHeight))
         }
 
-        return Pair(srcRect, dstRect)
+        return FrameTransformMetrics(
+            srcRect = srcRect,
+            dstRect = dstRect,
+            scale = scale,
+            cropX = cropX,
+            cropY = cropY,
+            srcWidth = srcWidth,
+            srcHeight = srcHeight,
+            dstWidth = dstWidth,
+            dstHeight = dstHeight,
+            sourceAspectStr = sourceAspectStr,
+            targetAspectStr = targetAspectStr
+        )
     }
 
     /**
@@ -108,22 +174,93 @@ object ZestoFrameTransformer {
         targetPackage: String,
         frameId: Long,
         healthState: String,
-        cropMode: FrameCropMode = FrameCropMode.CENTER_CROP_9_16
+        cropMode: FrameCropMode = FrameCropMode.CENTER_CROP_9_16,
+        screenWidth: Int = 1080,
+        screenHeight: Int = 1920
     ) {
         val dstW = canvas.width
         val dstH = canvas.height
         if (dstW <= 0 || dstH <= 0) return
 
         if (bitmap != null && !bitmap.isRecycled) {
-            val (srcRect, dstRect) = calculateCropRect(bitmap.width, bitmap.height, dstW, dstH, cropMode)
-            canvas.drawBitmap(bitmap, srcRect, dstRect, renderPaint)
+            val srcW = bitmap.width
+            val srcH = bitmap.height
+
+            // Handle Camera HAL landscape buffers (e.g. 1920x1080) when rendering 9:16 portrait video
+            if (dstW > dstH && srcW < srcH) {
+                // Buffer is landscape (1920x1080) but camera app displays in portrait with 90° rotation
+                canvas.save()
+                canvas.translate(dstW / 2f, dstH / 2f)
+                canvas.rotate(90f)
+                canvas.translate(-dstH / 2f, -dstW / 2f)
+
+                // Render with effective destination dimensions (dstH x dstW)
+                val metrics = calculateCropRect(srcW, srcH, dstH, dstW, cropMode)
+                canvas.drawBitmap(bitmap, metrics.srcRect, metrics.dstRect, renderPaint)
+                canvas.restore()
+
+                if (frameId == 1L || frameId % 60L == 0L) {
+                    logTransformDiagnostics(
+                        metrics = metrics.copy(dstWidth = dstW, dstHeight = dstH, rotationApplied = 90),
+                        targetPackage = targetPackage,
+                        frameId = frameId,
+                        screenWidth = screenWidth,
+                        screenHeight = screenHeight
+                    )
+                }
+            } else {
+                // Standard portrait rendering onto target surface
+                val metrics = calculateCropRect(srcW, srcH, dstW, dstH, cropMode)
+                canvas.drawBitmap(bitmap, metrics.srcRect, metrics.dstRect, renderPaint)
+
+                if (frameId == 1L || frameId % 60L == 0L) {
+                    logTransformDiagnostics(
+                        metrics = metrics,
+                        targetPackage = targetPackage,
+                        frameId = frameId,
+                        screenWidth = screenWidth,
+                        screenHeight = screenHeight
+                    )
+                }
+            }
         } else {
             renderPortraitStandbyPattern(canvas, targetPackage, frameId, healthState)
         }
     }
 
     /**
-     * Renders an elegant, high-contrast 9:16 portrait standby test pattern card.
+     * Emits the required dimension and aspect-ratio transform diagnostics to logcat.
+     */
+    private fun logTransformDiagnostics(
+        metrics: FrameTransformMetrics,
+        targetPackage: String,
+        frameId: Long,
+        screenWidth: Int,
+        screenHeight: Int
+    ) {
+        val logMsg = buildString {
+            append("SOURCE_SIZE=${metrics.srcWidth}x${metrics.srcHeight} ")
+            append("DECODE_SIZE=${metrics.srcWidth}x${metrics.srcHeight} ")
+            append("BRIDGE_SIZE=${metrics.srcWidth}x${metrics.srcHeight} ")
+            append("PIPELINE_SIZE=${metrics.srcWidth}x${metrics.srcHeight} ")
+            append("TARGET_SURFACE_SIZE=${metrics.dstWidth}x${metrics.dstHeight} ")
+            append("TARGET_PREVIEW_SIZE=${metrics.dstWidth}x${metrics.dstHeight} ")
+            append("SCREEN_SIZE=${screenWidth}x${screenHeight} ")
+            append("SOURCE_ASPECT=${metrics.sourceAspectStr} ")
+            append("TARGET_ASPECT=${metrics.targetAspectStr} ")
+            append("SCALE=${String.format(Locale.US, "%.3f", metrics.scale)} ")
+            append("CROP_X=${metrics.cropX} ")
+            append("CROP_Y=${metrics.cropY} ")
+            if (metrics.rotationApplied != 0) {
+                append("ROTATION=${metrics.rotationApplied}deg ")
+            }
+            append("(frame #$frameId, target=$targetPackage)")
+        }
+        Log.i(TAG, "[FRAME_TRANSFORM] $logMsg")
+    }
+
+    /**
+     * Renders an elegant, full-bleed 9:16 portrait standby test pattern card without empty edge gaps.
      */
     fun renderPortraitStandbyPattern(
         canvas: Canvas,
@@ -134,14 +271,27 @@ object ZestoFrameTransformer {
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
 
-        // Background Dark Canvas
+        // 1. Full-Bleed Dark Slate Canvas (Fills entire screen 0 to w, 0 to h)
         val bgPaint = Paint().apply { color = Color.rgb(11, 17, 33) }
         canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-        // Center Card Container
-        val cardPaint = Paint().apply { color = Color.rgb(20, 29, 47) }
-        val cardMarginX = w * 0.06f
-        val cardMarginY = h * 0.12f
+        // 2. Full-Width Top Accent Strip (Edge-to-Edge)
+        val emeraldPaint = Paint().apply {
+            color = Color.rgb(16, 185, 129)
+            isAntiAlias = true
+        }
+        canvas.drawRect(0f, 0f, w, (h * 0.015f).coerceAtLeast(8f), emeraldPaint)
+
+        // 3. Full-Width Bottom Accent Strip (Edge-to-Edge)
+        canvas.drawRect(0f, h - (h * 0.015f).coerceAtLeast(8f), w, h, emeraldPaint)
+
+        // 4. Center High-Tech Container Card
+        val cardPaint = Paint().apply {
+            color = Color.rgb(20, 29, 47)
+            isAntiAlias = true
+        }
+        val cardMarginX = w * 0.04f
+        val cardMarginY = h * 0.06f
         canvas.drawRoundRect(
             cardMarginX,
             cardMarginY,
@@ -152,16 +302,15 @@ object ZestoFrameTransformer {
             cardPaint
         )
 
-        // Emerald Accent Bar
-        val accentPaint = Paint().apply { color = Color.rgb(16, 185, 129) }
+        // Top Card Accent Bar
         canvas.drawRoundRect(
             cardMarginX,
             cardMarginY,
             w - cardMarginX,
-            cardMarginY + (h * 0.015f),
+            cardMarginY + (h * 0.012f),
             12f,
             12f,
-            accentPaint
+            emeraldPaint
         )
 
         val titlePaint = Paint().apply {
@@ -177,7 +326,7 @@ object ZestoFrameTransformer {
             isAntiAlias = true
         }
 
-        val emeraldPaint = Paint().apply {
+        val subHeaderPaint = Paint().apply {
             color = Color.rgb(16, 185, 129)
             textSize = (h * 0.019f).coerceIn(22f, 38f)
             isAntiAlias = true
@@ -190,20 +339,20 @@ object ZestoFrameTransformer {
 
         canvas.drawText("ZESTO VIRTUAL CAMERA", startX, currentY, titlePaint)
         currentY += lineSpacing * 0.9f
-        canvas.drawText("CANONICAL 9:16 PORTRAIT PIPELINE", startX, currentY, emeraldPaint)
+        canvas.drawText("CANONICAL 9:16 PORTRAIT PIPELINE", startX, currentY, subHeaderPaint)
 
         currentY += lineSpacing * 1.3f
         canvas.drawText("TARGET: $targetPackage", startX, currentY, titlePaint)
         currentY += lineSpacing
-        canvas.drawText("OUTPUT: 1080x1920 (9:16)", startX, currentY, bodyPaint)
+        canvas.drawText("OUTPUT: ${canvas.width}x${canvas.height} (9:16 Full)", startX, currentY, bodyPaint)
         currentY += lineSpacing
-        canvas.drawText("STATUS: $healthState", startX, currentY, if (healthState == "FRAME_ACTIVE") emeraldPaint else bodyPaint)
+        canvas.drawText("STATUS: $healthState", startX, currentY, if (healthState == "FRAME_ACTIVE") subHeaderPaint else bodyPaint)
         currentY += lineSpacing
         canvas.drawText("PIPELINE: RTSP -> Decoder -> Camera Hook", startX, currentY, bodyPaint)
 
         currentY += lineSpacing * 1.3f
         val timeStr = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-        canvas.drawText("CYCLE: #$frameId", startX, currentY, emeraldPaint)
+        canvas.drawText("CYCLE: #$frameId", startX, currentY, subHeaderPaint)
         currentY += lineSpacing
         canvas.drawText("TIME: $timeStr", startX, currentY, bodyPaint)
     }
@@ -224,3 +373,4 @@ object ZestoFrameTransformer {
         }
     }
 }
+

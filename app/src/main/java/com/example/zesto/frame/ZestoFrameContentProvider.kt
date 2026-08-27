@@ -48,8 +48,10 @@ class ZestoFrameContentProvider : ContentProvider() {
     }
 
     override fun onCreate(): Boolean {
+        ZestoFrameBridge.setProviderRunning(true)
+        ZestoFrameBridge.setBridgeReady(true)
         Log.i(TAG, "[FRAME_PROVIDER] provider created")
-        Log.i(TAG, "[FRAME_PROVIDER] provider registered/available")
+        Log.i(TAG, "[FRAME_PROVIDER] provider registered/available (providerRunning=true)")
         Log.i(TAG, "[ZESTO_PROCESS_INIT] ZestoFrameContentProvider initialized.")
         return true
     }

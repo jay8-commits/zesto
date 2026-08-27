@@ -52,7 +52,7 @@ class RTSPPlayerEngine(
     var diagnosticsManager: com.example.zesto.diagnostics.DiagnosticsManager? = null
 
     private var exoPlayer: ExoPlayer? = null
-    private var surfaceTexture: SurfaceTexture? = null
+    private var offscreenFrameExtractor: OffscreenFrameExtractor? = null
     private var internalSurface: Surface? = null
     private var frameListener: ((VideoFrame) -> Unit)? = null
 
@@ -135,13 +135,20 @@ class RTSPPlayerEngine(
         height: Int,
         timestampUs: Long = System.nanoTime() / 1000L
     ) {
+        val isValid = !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0
+        if (!isValid) {
+            Log.w(TAG, "[ZESTO_FRAME_INVALID] Frame contains invalid bitmap (recycled=${bitmap.isRecycled}, ${bitmap.width}x${bitmap.height})")
+            return
+        }
+
         val count = renderedFramesCount.incrementAndGet()
         framesSinceLastFps++
         if (width > 0) currentVideoWidth = width
         if (height > 0) currentVideoHeight = height
 
         if (count == 1L || count % 60L == 0L) {
-            Log.i(TAG, "[RTSP_FRAME_DECODED] id=$count width=$width height=$height")
+            Log.i(TAG, "[RTSP_FRAME_DECODED] id=$count width=$width height=$height timestamp=$timestampUs BITMAP_VALID=true")
+            Log.i(TAG, "[RTSP_FRAME_PIXELS_READY] id=$count width=$width height=$height BITMAP_WIDTH=$width BITMAP_HEIGHT=$height FRAME_ID=$count BITMAP_VALID=true")
             diagnosticsManager?.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED)
         }
 
@@ -154,6 +161,11 @@ class RTSPPlayerEngine(
             bitmap = bitmap,
             sourceMode = FrameSourceMode.RTSP
         )
+
+        if (count == 1L || count % 60L == 0L) {
+            Log.i(TAG, "[FRAME_PIPELINE_DISPATCH] id=$count width=$width height=$height timestamp=$timestampUs")
+        }
+
         frameListener?.invoke(frame)
     }
 
@@ -177,31 +189,22 @@ class RTSPPlayerEngine(
                     renderersFactory
                 ).build()
 
-            // Attach offscreen SurfaceTexture to receive hardware-decoded video frames directly
+            // Attach offscreen GL Frame Extractor to receive and convert hardware-decoded frames directly
             try {
-                val st = SurfaceTexture(0).apply {
-                    setDefaultBufferSize(1280, 720)
-                    setOnFrameAvailableListener {
-                        val count = renderedFramesCount.incrementAndGet()
-                        framesSinceLastFps++
-                        val width = if (currentVideoWidth > 0) currentVideoWidth else 854
-                        val height = if (currentVideoHeight > 0) currentVideoHeight else 480
-                        val frame = VideoFrame(
-                            frameNumber = count,
-                            timestampUs = System.nanoTime() / 1000L,
-                            width = width,
-                            height = height,
-                            pixelFormat = PixelFormat.SURFACE_TEXTURE
-                        )
-                        frameListener?.invoke(frame)
-                    }
+                val initialW = if (currentVideoWidth > 0) currentVideoWidth else 1280
+                val initialH = if (currentVideoHeight > 0) currentVideoHeight else 720
+                val extractor = OffscreenFrameExtractor(initialW, initialH) { bmp, w, h, ts ->
+                    deliverDecodedFrame(bmp, w, h, ts)
                 }
-                surfaceTexture = st
-                val surf = Surface(st)
+                offscreenFrameExtractor = extractor
+                val surf = extractor.surface
                 internalSurface = surf
-                playerInstance.setVideoSurface(surf)
-            } catch (_: Exception) {
-                // In headless JVM / test environments, SurfaceTexture(0) may not be GL-backed
+                if (surf != null) {
+                    playerInstance.setVideoSurface(surf)
+                    Log.i(TAG, "[DECODER_SURFACE_ATTACHED] Offscreen hardware decoder surface attached (${initialW}x${initialH})")
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "OffscreenFrameExtractor init fallback: ${e.message}")
             }
 
             playerInstance.addListener(
@@ -222,6 +225,9 @@ class RTSPPlayerEngine(
 
                                         if (w > 0) currentVideoWidth = w
                                         if (h > 0) currentVideoHeight = h
+                                        if (w > 0 && h > 0) {
+                                            offscreenFrameExtractor?.updateDimensions(w, h)
+                                        }
 
                                         diagnosticsManager?.logger?.info(
                                             com.example.zesto.diagnostics.Subsystem.TRANSPORT,
@@ -370,7 +376,7 @@ class RTSPPlayerEngine(
                                 videoSize.height
 
                             try {
-                                surfaceTexture?.setDefaultBufferSize(videoSize.width, videoSize.height)
+                                offscreenFrameExtractor?.updateDimensions(videoSize.width, videoSize.height)
                             } catch (_: Exception) {}
 
                             _decoderStats.update {
@@ -393,28 +399,17 @@ class RTSPPlayerEngine(
                         _decoderState.value =
                             DecoderState.Running
 
-                        val count = renderedFramesCount.incrementAndGet()
-                        framesSinceLastFps++
                         val width = if (currentVideoWidth > 0) currentVideoWidth else 1280
                         val height = if (currentVideoHeight > 0) currentVideoHeight else 720
                         val timestampUs = System.nanoTime() / 1000L
 
                         diagnosticsManager?.logger?.info(
                             com.example.zesto.diagnostics.Subsystem.DECODER,
-                            "[VIDEO_FRAME_DECODED] First video frame decoded and rendered to surface: codec=$decoderName, resolution=${width}x${height}, timestampUs=$timestampUs, frameCount=$count"
+                            "[VIDEO_FRAME_DECODED] First video frame decoded to hardware surface: codec=$decoderName, resolution=${width}x${height}, timestampUs=$timestampUs"
                         )
                         diagnosticsManager?.recordBoundaryStage(
                             com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED
                         )
-
-                        val frame = VideoFrame(
-                            frameNumber = count,
-                            timestampUs = timestampUs,
-                            width = width,
-                            height = height,
-                            pixelFormat = PixelFormat.SURFACE_TEXTURE
-                        )
-                        frameListener?.invoke(frame)
                     }
 
                     override fun onPlayerError(
@@ -920,14 +915,10 @@ class RTSPPlayerEngine(
         frameListener = null
 
         try {
-            internalSurface?.release()
+            offscreenFrameExtractor?.release()
         } catch (_: Exception) {}
+        offscreenFrameExtractor = null
         internalSurface = null
-
-        try {
-            surfaceTexture?.release()
-        } catch (_: Exception) {}
-        surfaceTexture = null
 
         renderedFramesCount.set(0L)
         droppedFramesCount.set(0L)

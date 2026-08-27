@@ -170,9 +170,10 @@ object ZestoFrameBridge {
             setBridgeReady(true)
         }
         if (id == 1L || id % 60L == 0L) {
+            Log.i(TAG, "[FRAME_GENERATED] id=$id")
+            Log.i(TAG, "[FRAME_BRIDGE_POSTED] id=$id")
             Log.i(TAG, "[FRAME_INJECTED] Frame #$id (${width}x${height}, format=$format) injected into bridge")
             Log.i(TAG, "[FRAME_PIPELINE] frames received=$id, frames delivered=${deliveredCounter.get()}, frames dropped=${droppedCounter.get()}, queue depth=1")
-            Log.i(TAG, "[FRAME_BRIDGE_POSTED] Frame #$id (${width}x${height}, format=$format) posted to shared frame bridge.")
         }
     }
 

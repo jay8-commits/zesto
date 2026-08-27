@@ -137,6 +137,7 @@ object ZestoRemoteFrameSource {
 
                 if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                     lastIpcLogMs = now
+                    Log.i(TAG, "[FRAME_IPC_RETURNED] id=$frameId")
                     Log.i(TAG, "[IPC_FRAME_REQUEST] target=$attachedPackageName requested frame via ContentResolver.call")
                     Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=$frameId dimensions=${width}x${height} format=${bundle.getString("format", "RGBA_8888")}")
                     Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${bitmap != null}")

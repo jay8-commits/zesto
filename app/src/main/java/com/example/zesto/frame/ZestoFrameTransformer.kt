@@ -355,17 +355,28 @@ object ZestoFrameTransformer {
         val lineSpacing = (h * 0.048f).coerceAtLeast(36f)
 
         // Section A: Universal Injection Test Header
-        canvas.drawText("ZESTO INJECTION TEST", startX, currentY, headerPaint)
+        val starPaint = Paint().apply {
+            color = edgeColor
+            textSize = (h * 0.016f).coerceIn(16f, 30f)
+            isAntiAlias = true
+        }
+        canvas.drawText("****************************************", startX, currentY, starPaint)
+        currentY += lineSpacing * 0.7f
+        canvas.drawText("        ZESTO INJECTION TEST", startX, currentY, headerPaint)
+        currentY += lineSpacing * 0.7f
+        canvas.drawText("****************************************", startX, currentY, starPaint)
         currentY += lineSpacing * 1.1f
 
         // Section B: Prominent Frame Counter (Visibly changing every frame)
-        canvas.drawText("FRAME: $frameId", startX, currentY, counterPaint)
+        canvas.drawText("FRAME: #$frameId", startX, currentY, counterPaint)
         currentY += lineSpacing * 1.1f
 
         // Section C: Target Package & Configuration
         canvas.drawText("TARGET: $targetPackage", startX, currentY, headerPaint)
         currentY += lineSpacing
-        canvas.drawText("SIZE: ${canvas.width}x${canvas.height} ($aspectStr)", startX, currentY, bodyPaint)
+        canvas.drawText("SIZE: ${canvas.width}x${canvas.height}", startX, currentY, bodyPaint)
+        currentY += lineSpacing
+        canvas.drawText("ASPECT: $aspectStr", startX, currentY, bodyPaint)
         currentY += lineSpacing
         val formattedFps = if (fps > 0) String.format(Locale.US, "%.1f", fps) else "29.8"
         canvas.drawText("FPS: $formattedFps", startX, currentY, subHeaderPaint)

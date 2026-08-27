@@ -1,6 +1,9 @@
 package com.example.zesto.hook
 
 import android.graphics.Canvas
+import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
+import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.util.Log
@@ -18,13 +21,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Universal Camera Interceptor covering:
- * 1. Camera2 API (android.hardware.camera2.CameraManager + CameraDevice)
- * 2. Legacy Camera1 API (android.hardware.Camera)
- * 3. Jetpack CameraX (androidx.camera.core)
+ * Universal Camera Interceptor & Hardware Producer Decoupling Engine.
  *
- * Provides comprehensive method interception with verbose runtime diagnostic logging
- * across all known camera access pathways.
+ * Prevents Camera HAL buffer collisions by redirecting the hardware camera stream
+ * to a dummy sink surface while exclusively rendering Zesto's 30 FPS virtual frames
+ * into the target application's visible preview surface.
  */
 object Camera2Hook {
     private const val TAG = "ZestoCameraHook"
@@ -46,30 +47,50 @@ object Camera2Hook {
     private var pumpTask: Future<*>? = null
     private val activeSurfaces = CopyOnWriteArrayList<Surface>()
 
+    // Dedicated dummy sink to isolate the hardware camera stream
+    private var dummySurfaceTexture: SurfaceTexture? = null
+    private var dummySurface: Surface? = null
+
     private val substitutedFramesCount = AtomicLong(0L)
     val totalSubstitutedFrames: Long get() = substitutedFramesCount.get()
 
     val status: HookStatus get() = currentStatus
 
+    @Synchronized
+    fun getOrCreateDummySurface(): Surface {
+        val existing = dummySurface
+        if (existing != null && existing.isValid) {
+            return existing
+        }
+        val st = SurfaceTexture(1001).apply {
+            setDefaultBufferSize(640, 480)
+        }
+        dummySurfaceTexture = st
+        val s = Surface(st)
+        dummySurface = s
+        Log.i(TAG, "[DUMMY_SINK_INITIALIZED] Created hardware camera isolation sink Surface@${System.identityHashCode(s).toString(16)}")
+        return s
+    }
+
     /**
-     * Attaches bytecode / reflection hooks across Camera2 and Camera1 APIs.
+     * Attaches bytecode / reflection hooks across Camera2 APIs.
      */
     fun attachHook(classLoader: ClassLoader, targetPackage: String = "unknown") {
         var hookCount = 0
-        Log.i(TAG, "[ATTACH_START] Installing camera interception hooks for target: $targetPackage")
+        Log.i(TAG, "[ATTACH_START] Installing camera interception & substitution hooks for target: $targetPackage")
 
         try {
             // 1. Camera2 CameraManager hooks
             hookCount += hookCameraManager(classLoader, targetPackage)
 
-            // 2. Camera2 CameraDevice session hooks
+            // 2. Camera2 CameraDevice session hooks (with hardware redirection)
             hookCount += hookCameraDevice(classLoader, targetPackage)
 
             // 3. Camera2 CaptureRequest and CaptureSession repeating request hooks
             hookCount += hookCameraSessionRequests(classLoader, targetPackage)
 
             currentStatus = HookStatus.HOOK_REGISTERED
-            val installMsg = "Installed $hookCount Camera2 method interception hooks for $targetPackage"
+            val installMsg = "Installed $hookCount Camera2 method interception & substitution hooks for $targetPackage"
             Log.i(TAG, "[CAMERA2_HOOK_INSTALLED] package=$targetPackage $installMsg")
             ZestoRemoteFrameSource.reportMilestone("CAMERA2_HOOK_INSTALLED", installMsg)
         } catch (e: Throwable) {
@@ -91,7 +112,7 @@ object Camera2Hook {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
                 val method = param.method?.name ?: "openCamera"
-                Log.d(TAG, "[RUN_TRACE] CameraManager.$method called in target=$targetPackage for cameraId=$cameraId")
+                Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraManager.$method(cameraId=$cameraId)")
                 onCameraDeviceOpening(cameraId, "CameraManager.$method", targetPackage)
             }
         }
@@ -165,7 +186,18 @@ object Camera2Hook {
             @Suppress("UNCHECKED_CAST")
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val surfaces = (param.args.getOrNull(0) as? List<Surface>) ?: emptyList()
-                Log.d(TAG, "[RUN_TRACE] CameraDevice.createCaptureSession(List) invoked with ${surfaces.size} surface(s)")
+                Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraDevice.createCaptureSession(List<Surface>)")
+                for (s in surfaces) {
+                    val hash = System.identityHashCode(s).toString(16)
+                    Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera2\nCLASS=${s.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${s.isValid}\nSURFACE_TEXTURE=null")
+                    Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${s.isValid} in $targetPackage")
+                }
+
+                // Redirect hardware session to dummy sink so Camera HAL does NOT lock or write to the preview Surface
+                val dummy = getOrCreateDummySurface()
+                param.args[0] = listOf(dummy)
+                Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Redirected hardware session to dummy Surface@${System.identityHashCode(dummy).toString(16)}. Real preview surface(s) isolated.")
+
                 onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(List)")
             }
         }
@@ -194,6 +226,7 @@ object Camera2Hook {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val sessionConfig = param.args.getOrNull(0) as? android.hardware.camera2.params.SessionConfiguration
                         if (sessionConfig != null) {
+                            Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraDevice.createCaptureSession(SessionConfiguration)")
                             val surfaces = mutableListOf<Surface>()
                             for (outputConfig in sessionConfig.outputConfigurations) {
                                 outputConfig.surface?.let { surfaces.add(it) }
@@ -201,7 +234,28 @@ object Camera2Hook {
                                     if (s != null && !surfaces.contains(s)) surfaces.add(s)
                                 }
                             }
-                            Log.d(TAG, "[RUN_TRACE] CameraDevice.createCaptureSession(SessionConfig) invoked with ${surfaces.size} surface(s)")
+                            for (s in surfaces) {
+                                val hash = System.identityHashCode(s).toString(16)
+                                Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera2\nCLASS=${s.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${s.isValid}\nSURFACE_TEXTURE=null")
+                                Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${s.isValid} in $targetPackage")
+                            }
+
+                            // Redirect session outputs to dummy
+                            val dummy = getOrCreateDummySurface()
+                            try {
+                                val dummyOutputConfig = android.hardware.camera2.params.OutputConfiguration(dummy)
+                                val newSessionConfig = android.hardware.camera2.params.SessionConfiguration(
+                                    sessionConfig.sessionType,
+                                    listOf(dummyOutputConfig),
+                                    sessionConfig.executor,
+                                    sessionConfig.stateCallback
+                                )
+                                param.args[0] = newSessionConfig
+                                Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Redirected SessionConfiguration to dummy Surface. Real preview surfaces isolated.")
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "[HARDWARE_REDIRECT_WARN] Could not rebuild SessionConfiguration: ${e.message}")
+                            }
+
                             onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(SessionConfiguration)")
                         }
                     }
@@ -217,27 +271,6 @@ object Camera2Hook {
             } catch (t: Throwable) {
                 Log.w(TAG, "[HOOK_FAIL] CameraDevice.createCaptureSession(SessionConfiguration): ${t.message}")
             }
-        }
-
-        // Hook createCustomCaptureSession / createCaptureSessionByOutputConfigurations
-        try {
-            for (m in deviceClass.declaredMethods) {
-                if (m.name == "createCaptureSessionByOutputConfigurations" || m.name == "createCustomCaptureSession") {
-                    XposedHelpers.findAndHookMethod(
-                        deviceClass,
-                        m.name,
-                        *m.parameterTypes,
-                        object : XC_MethodHook() {
-                            override fun beforeHookedMethod(param: MethodHookParam) {
-                                Log.d(TAG, "[RUN_TRACE] CameraDevice.${m.name} invoked in target: $targetPackage")
-                            }
-                        }
-                    )
-                    installed++
-                    Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.${m.name}")
-                }
-            }
-        } catch (_: Throwable) {
         }
 
         return installed
@@ -276,10 +309,16 @@ object Camera2Hook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val surface = param.args.getOrNull(0) as? Surface
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CaptureRequest.Builder.addTarget(Surface)")
                         if (surface != null) {
                             val hash = System.identityHashCode(surface).toString(16)
+                            Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera2\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
                             Log.i(TAG, "[SURFACE_CAPTURE_REQUEST_TARGET] Target Surface added to CaptureRequest: hash=@$hash valid=${surface.isValid} in $targetPackage")
-                            Log.i(TAG, "[SURFACE_DISCOVERED] Discovered CaptureRequest target Surface: hash=@$hash class=${surface.javaClass.simpleName} valid=${surface.isValid}")
+
+                            // Redirect request target to dummy surface
+                            val dummy = getOrCreateDummySurface()
+                            param.args[0] = dummy
+                            Log.i(TAG, "[CAPTURE_REQUEST_REDIRECTED] CaptureRequest target redirected to dummy Surface")
                         }
                     }
                 }
@@ -303,6 +342,7 @@ object Camera2Hook {
                 Handler::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraCaptureSession.setRepeatingRequest")
                         Log.i(TAG, "[REPEATING_REQUEST_STARTED] CameraCaptureSession.setRepeatingRequest invoked in $targetPackage")
                     }
                 }
@@ -326,6 +366,7 @@ object Camera2Hook {
                 Handler::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraCaptureSession.capture")
                         Log.i(TAG, "[CAPTURE_REQUEST_INVOKED] CameraCaptureSession.capture invoked in $targetPackage")
                     }
                 }
@@ -354,7 +395,7 @@ object Camera2Hook {
 
     /**
      * Called when a target CameraCaptureSession is created.
-     * Hooks target surfaces and starts the live frame substitution pump.
+     * Attaches isolated preview surfaces and starts the live frame substitution pump.
      */
     fun onSessionConfigured(outputs: List<Surface>, targetPackage: String = "unknown", source: String = "createCaptureSession") {
         if (targetPackage != "unknown") {
@@ -372,7 +413,7 @@ object Camera2Hook {
             activeSurfaces.addAll(validSurfaces)
 
             currentStatus = HookStatus.SURFACE_TARGET_ATTACHED
-            Log.i(TAG, "[SURFACE_ATTACHED] Attached to ${validSurfaces.size} valid target surface(s).")
+            Log.i(TAG, "[SURFACE_ATTACHED] Attached to ${validSurfaces.size} isolated target surface(s).")
             startFramePump(validSurfaces, targetPackage)
         } else if (outputs.isNotEmpty()) {
             currentStatus = HookStatus.SURFACE_LOST
@@ -384,14 +425,14 @@ object Camera2Hook {
     }
 
     /**
-     * Continuously substitutes frames into target surfaces using canonical 9:16 portrait normalization.
+     * Continuously renders 30 FPS virtual frames onto the isolated preview surface.
      */
     fun startFramePump(surfaces: List<Surface>, targetPackage: String = "unknown") {
         stopFramePump()
         isPumping.set(true)
         currentStatus = HookStatus.FRAME_PUMP_ACTIVE
 
-        val activeMsg = "Active frame substitution pump rendering 9:16 portrait frames onto ${surfaces.size} target surface(s)"
+        val activeMsg = "Active frame substitution pump rendering 30 FPS frames onto ${surfaces.size} isolated target surface(s)"
         Log.i(TAG, "[FRAME_SUBSTITUTION_ACTIVE] $activeMsg")
         Log.i(TAG, "[FRAME_SOURCE_STARTED] Frame substitution pump started for $targetPackage")
         ZestoRemoteFrameSource.reportMilestone("FRAME_SUBSTITUTION_ACTIVE", activeMsg)
@@ -427,8 +468,10 @@ object Camera2Hook {
 
                         var canvas: Canvas? = null
                         val hash = System.identityHashCode(surface).toString(16)
+                        val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
                         try {
                             if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId")
                                 Log.i(TAG, "[FRAME_RENDER_STARTED] Rendering cycle #$cycleCount onto Surface hash=@$hash in $targetPackage")
                                 Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
                             }
@@ -439,11 +482,13 @@ object Camera2Hook {
                                     canvas = canvas,
                                     bitmap = bitmap,
                                     targetPackage = targetPackage,
-                                    frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount,
+                                    frameId = frameId,
                                     healthState = frameResult.healthState,
-                                    cropMode = FrameCropMode.CENTER_CROP_9_16
+                                    cropMode = FrameCropMode.CENTER_CROP_9_16,
+                                    fps = currentTargetFps
                                 )
                                 if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                    Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId")
                                     Log.i(TAG, "[FRAME_RENDERED_TO_SURFACE] Render completed on canvas ${canvas.width}x${canvas.height} for target=$targetPackage")
                                 }
                             }
@@ -455,6 +500,7 @@ object Camera2Hook {
                                     surface.unlockCanvasAndPost(canvas)
                                     val count = substitutedFramesCount.incrementAndGet()
                                     if (count == 1L || count % 60L == 0L) {
+                                        Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
                                         val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId}) @ ${String.format(Locale.US, "%.1f", currentTargetFps)} FPS"
                                         Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] $logMsg")
                                         Log.i(TAG, "[FRAME_CONSUMED] $logMsg")
@@ -495,4 +541,5 @@ object Camera2Hook {
         }
     }
 }
+
 

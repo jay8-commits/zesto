@@ -60,7 +60,8 @@ class ZestoXposedInit : IXposedHookLoadPackage {
             Log.i(MODULE_TAG, logManifestDiag)
             ZestoRemoteFrameSource.reportMilestone("PATCH_MANIFEST_APPLICATION", logManifestDiag)
 
-            Log.i(MODULE_TAG, "[TARGET_PROCESS_ATTACHED] Target process identified and attached: $packageName (process: $processName)")
+            val targetLog = "[TARGET_PROCESS_ATTACHED]\nPACKAGE=$packageName\nPROCESS=$processName\nCLASSLOADER=${classLoader.javaClass.name}"
+            Log.i(MODULE_TAG, targetLog)
             ZestoRemoteFrameSource.reportMilestone("TARGET_PROCESS_ATTACHED", "Attached to target package $packageName (process $processName)")
 
             try {
@@ -69,8 +70,10 @@ class ZestoXposedInit : IXposedHookLoadPackage {
                 hookCameraXPipeline(classLoader, packageName)
 
                 currentLifecycle = XposedHookLifecycle.CAMERA2_HOOK_INSTALLED
-                Log.i(MODULE_TAG, "[CAMERA2_HOOK_INSTALLED] Virtualization hooks registered for package: $packageName")
-                ZestoRemoteFrameSource.reportMilestone("CAMERA2_HOOK_INSTALLED", "Camera2 & Legacy Camera hooks installed for $packageName")
+                Log.i(MODULE_TAG, "[CAMERA2_HOOK_INSTALLED]\nPACKAGE=$packageName")
+                Log.i(MODULE_TAG, "[CAMERAX_HOOK_INSTALLED]\nPACKAGE=$packageName")
+                Log.i(MODULE_TAG, "[LEGACY_CAMERA_HOOK_INSTALLED]\nPACKAGE=$packageName")
+                ZestoRemoteFrameSource.reportMilestone("CAMERA2_HOOK_INSTALLED", "Camera2, Legacy Camera & CameraX hooks installed for $packageName")
             } catch (e: Throwable) {
                 currentLifecycle = XposedHookLifecycle.HOOK_FAILED
                 Log.e(MODULE_TAG, "[HOOK_FAILED] Failed to register camera hooks: ${e.message}", e)

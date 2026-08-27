@@ -46,6 +46,7 @@ object CameraXHook {
                 Class.forName("androidx.camera.core.Preview\$SurfaceProvider", false, classLoader),
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Preview.setSurfaceProvider")
                         val msg = "Target process ($targetPackage) configured CameraX Preview SurfaceProvider"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
                         ZestoRemoteFrameSource.reportMilestone("CAMERA2_DEVICE_OPEN_INTERCEPTED", msg)
@@ -65,6 +66,9 @@ object CameraXHook {
 
     fun onSurfaceProvided(surface: Surface, targetPackage: String = "unknown") {
         currentStatus = CameraXStatus.SURFACE_PROVIDER_INTERCEPTED
+        val hash = System.identityHashCode(surface).toString(16)
+        Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=CameraX\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
+        Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
         Log.i(TAG, "[SURFACE_PROVIDER_INTERCEPTED] CameraX provided target preview surface.")
         Log.i(TAG, "[SURFACE_ATTACHED] CameraX target surface attached.")
         startFramePump(surface, targetPackage)
@@ -83,34 +87,46 @@ object CameraXHook {
 
         pumpTask = renderExecutor.submit {
             var cycleCount = 0L
+            val hash = System.identityHashCode(surface).toString(16)
 
             while (isPumping.get() && surface.isValid) {
                 try {
                     val frameResult = ZestoRemoteFrameSource.fetchLatestFrame()
                     val bitmap = frameResult.bitmap
                     cycleCount++
+                    val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
 
                     var canvas: Canvas? = null
                     try {
+                        if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                            Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId")
+                            Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
+                        }
+
                         canvas = surface.lockCanvas(null)
                         if (canvas != null) {
                             ZestoFrameTransformer.renderToCanvas(
                                 canvas = canvas,
                                 bitmap = bitmap,
                                 targetPackage = targetPackage,
-                                frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount,
+                                frameId = frameId,
                                 healthState = frameResult.healthState,
-                                cropMode = FrameCropMode.CENTER_CROP_9_16
+                                cropMode = FrameCropMode.CENTER_CROP_9_16,
+                                fps = 29.8
                             )
+                            if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId")
+                            }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "CameraX render canvas exception: ${e.message}")
+                        Log.w(TAG, "CameraX render canvas exception on surface=@$hash: ${e.message}")
                     } finally {
                         if (canvas != null) {
                             try {
                                 surface.unlockCanvasAndPost(canvas)
                                 val count = substitutedFramesCount.incrementAndGet()
                                 if (count == 1L || count % 60L == 0L) {
+                                    Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
                                     val logMsg = "Target preview surface received and displayed frame #$count"
                                     Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
                                     ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)

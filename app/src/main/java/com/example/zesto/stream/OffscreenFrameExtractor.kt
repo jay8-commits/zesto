@@ -1,4 +1,3 @@
-```kotlin
 package com.example.zesto.stream
 
 import android.graphics.Bitmap
@@ -20,8 +19,10 @@ import java.nio.FloatBuffer
 
 /**
  * Headless, off-screen OpenGL ES 2.0 frame extractor for ExoPlayer MediaCodec output.
+ *
  * Renders hardware-decoded video frames from an off-screen SurfaceTexture into
- * canonical Bitmap instances in real-time, independent of any UI or Activity lifecycle.
+ * Bitmap instances. The decoder output Surface is backed by SurfaceTexture,
+ * while OpenGL renders the external OES texture into an RGBA framebuffer.
  */
 class OffscreenFrameExtractor(
     private var videoWidth: Int = 1280,
@@ -33,6 +34,7 @@ class OffscreenFrameExtractor(
         timestampUs: Long
     ) -> Unit
 ) {
+
     companion object {
         private const val TAG = "OffscreenFrameExtractor"
 
@@ -102,14 +104,6 @@ class OffscreenFrameExtractor(
     private var pixelBuffer: ByteBuffer? = null
     private var reusableBitmap: Bitmap? = null
 
-    /*
-     * Volatile flags are used instead of AtomicBoolean.
-     *
-     * This avoids the Kotlin compilation problem caused by calls such as
-     * isReleased.get() and isReleased.compareAndSet(...).
-     *
-     * The flags can be read safely across the GL thread and the caller thread.
-     */
     @Volatile
     private var isInitialized = false
 
@@ -126,13 +120,18 @@ class OffscreenFrameExtractor(
         get() = outputSurface
 
     private fun initGlThread() {
-        val thread = HandlerThread("ZestoGlFrameExtractor").apply {
+        val thread = HandlerThread(
+            "ZestoGlFrameExtractor"
+        ).apply {
             start()
         }
 
         glThread = thread
 
-        val handler = Handler(thread.looper)
+        val handler = Handler(
+            thread.looper
+        )
+
         glHandler = handler
 
         val initLock = Object()
@@ -143,7 +142,10 @@ class OffscreenFrameExtractor(
                 initEGL()
                 initGL()
                 initSurfaceTexture()
-                initFBO(videoWidth, videoHeight)
+                initFBO(
+                    videoWidth,
+                    videoHeight
+                )
                 initBuffers()
 
                 initSuccess = true
@@ -245,7 +247,9 @@ class OffscreenFrameExtractor(
         }
 
         val config = configs[0]
-            ?: throw RuntimeException("Null EGLConfig")
+            ?: throw RuntimeException(
+                "Null EGLConfig"
+            )
 
         val contextAttribs = intArrayOf(
             EGL14.EGL_CONTEXT_CLIENT_VERSION,
@@ -313,6 +317,12 @@ class OffscreenFrameExtractor(
 
         programId = GLES20.glCreateProgram()
 
+        if (programId == 0) {
+            throw RuntimeException(
+                "glCreateProgram failed"
+            )
+        }
+
         GLES20.glAttachShader(
             programId,
             vShader
@@ -323,7 +333,9 @@ class OffscreenFrameExtractor(
             fShader
         )
 
-        GLES20.glLinkProgram(programId)
+        GLES20.glLinkProgram(
+            programId
+        )
 
         val linkStatus = IntArray(1)
 
@@ -334,6 +346,9 @@ class OffscreenFrameExtractor(
             0
         )
 
+        GLES20.glDeleteShader(vShader)
+        GLES20.glDeleteShader(fShader)
+
         if (linkStatus[0] != GLES20.GL_TRUE) {
             val error = GLES20.glGetProgramInfoLog(
                 programId
@@ -342,6 +357,8 @@ class OffscreenFrameExtractor(
             GLES20.glDeleteProgram(
                 programId
             )
+
+            programId = 0
 
             throw RuntimeException(
                 "GL Program link failed: $error"
@@ -368,6 +385,17 @@ class OffscreenFrameExtractor(
             "sTexture"
         )
 
+        if (
+            aPositionHandle < 0 ||
+            aTextureCoordHandle < 0 ||
+            uSTMatrixHandle < 0 ||
+            sTextureHandle < 0
+        ) {
+            throw RuntimeException(
+                "Failed to resolve GL shader handles"
+            )
+        }
+
         val textures = IntArray(1)
 
         GLES20.glGenTextures(
@@ -377,6 +405,12 @@ class OffscreenFrameExtractor(
         )
 
         oesTextureId = textures[0]
+
+        if (oesTextureId == 0) {
+            throw RuntimeException(
+                "Failed to create external OES texture"
+            )
+        }
 
         GLES20.glBindTexture(
             GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
@@ -406,6 +440,11 @@ class OffscreenFrameExtractor(
             GLES20.GL_TEXTURE_WRAP_T,
             GLES20.GL_CLAMP_TO_EDGE
         )
+
+        GLES20.glBindTexture(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            0
+        )
     }
 
     private fun initSurfaceTexture() {
@@ -418,13 +457,16 @@ class OffscreenFrameExtractor(
                 videoHeight
             )
 
-            setOnFrameAvailableListener({
-                if (!isReleased) {
-                    glHandler?.post {
-                        processFrame()
+            setOnFrameAvailableListener(
+                {
+                    if (!isReleased) {
+                        glHandler?.post {
+                            processFrame()
+                        }
                     }
-                }
-            }, glHandler)
+                },
+                glHandler
+            )
         }
 
         surfaceTexture = st
@@ -445,6 +487,12 @@ class OffscreenFrameExtractor(
 
         fboId = fbos[0]
 
+        if (fboId == 0) {
+            throw RuntimeException(
+                "Failed to create framebuffer"
+            )
+        }
+
         val texs = IntArray(1)
 
         GLES20.glGenTextures(
@@ -454,6 +502,12 @@ class OffscreenFrameExtractor(
         )
 
         fboTextureId = texs[0]
+
+        if (fboTextureId == 0) {
+            throw RuntimeException(
+                "Failed to create framebuffer texture"
+            )
+        }
 
         GLES20.glBindTexture(
             GLES20.GL_TEXTURE_2D,
@@ -523,6 +577,11 @@ class OffscreenFrameExtractor(
             GLES20.GL_FRAMEBUFFER,
             0
         )
+
+        GLES20.glBindTexture(
+            GLES20.GL_TEXTURE_2D,
+            0
+        )
     }
 
     private fun initBuffers() {
@@ -568,13 +627,23 @@ class OffscreenFrameExtractor(
     ) {
         if (
             width <= 0 ||
-            height <= 0 ||
-            (width == videoWidth && height == videoHeight)
+            height <= 0
+        ) {
+            return
+        }
+
+        if (
+            width == videoWidth &&
+            height == videoHeight
         ) {
             return
         }
 
         glHandler?.post {
+            if (isReleased) {
+                return@post
+            }
+
             try {
                 videoWidth = width
                 videoHeight = height
@@ -601,6 +670,11 @@ class OffscreenFrameExtractor(
                     null
                 )
 
+                GLES20.glBindTexture(
+                    GLES20.GL_TEXTURE_2D,
+                    0
+                )
+
                 pixelBuffer =
                     ByteBuffer.allocateDirect(
                         width * height * 4
@@ -623,7 +697,8 @@ class OffscreenFrameExtractor(
             } catch (e: Throwable) {
                 Log.w(
                     TAG,
-                    "Error resizing offscreen GL extractor: ${e.message}"
+                    "Error resizing offscreen GL extractor: ${e.message}",
+                    e
                 )
             }
         }
@@ -632,26 +707,50 @@ class OffscreenFrameExtractor(
     private fun processFrame() {
         if (
             isReleased ||
-            eglDisplay == EGL14.EGL_NO_DISPLAY
+            !isInitialized ||
+            eglDisplay == EGL14.EGL_NO_DISPLAY ||
+            eglContext == EGL14.EGL_NO_CONTEXT ||
+            eglSurface == EGL14.EGL_NO_SURFACE
         ) {
             return
         }
 
         try {
-            EGL14.eglMakeCurrent(
-                eglDisplay,
-                eglSurface,
-                eglSurface,
-                eglContext
-            )
+            if (
+                !EGL14.eglMakeCurrent(
+                    eglDisplay,
+                    eglSurface,
+                    eglSurface,
+                    eglContext
+                )
+            ) {
+                Log.w(
+                    TAG,
+                    "eglMakeCurrent failed during frame processing: ${EGL14.eglGetError()}"
+                )
+                return
+            }
 
-            val st = surfaceTexture ?: return
+            val st = surfaceTexture
+                ?: return
 
             st.updateTexImage()
-            st.getTransformMatrix(stMatrix)
+            st.getTransformMatrix(
+                stMatrix
+            )
 
             val width = videoWidth
             val height = videoHeight
+
+            if (
+                width <= 0 ||
+                height <= 0 ||
+                fboId == 0 ||
+                programId == 0 ||
+                oesTextureId == 0
+            ) {
+                return
+            }
 
             GLES20.glBindFramebuffer(
                 GLES20.GL_FRAMEBUFFER,
@@ -663,6 +762,13 @@ class OffscreenFrameExtractor(
                 0,
                 width,
                 height
+            )
+
+            GLES20.glClearColor(
+                0f,
+                0f,
+                0f,
+                1f
             )
 
             GLES20.glClear(
@@ -739,7 +845,22 @@ class OffscreenFrameExtractor(
                 aTextureCoordHandle
             )
 
-            val pBuf = pixelBuffer ?: return
+            GLES20.glBindTexture(
+                GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                0
+            )
+
+            val glError = GLES20.glGetError()
+
+            if (glError != GLES20.GL_NO_ERROR) {
+                Log.w(
+                    TAG,
+                    "OpenGL error after draw: $glError"
+                )
+            }
+
+            val pBuf = pixelBuffer
+                ?: return
 
             pBuf.rewind()
 
@@ -753,6 +874,22 @@ class OffscreenFrameExtractor(
                 pBuf
             )
 
+            val readError = GLES20.glGetError()
+
+            if (readError != GLES20.GL_NO_ERROR) {
+                Log.w(
+                    TAG,
+                    "OpenGL error after glReadPixels: $readError"
+                )
+
+                GLES20.glBindFramebuffer(
+                    GLES20.GL_FRAMEBUFFER,
+                    0
+                )
+
+                return
+            }
+
             GLES20.glBindFramebuffer(
                 GLES20.GL_FRAMEBUFFER,
                 0
@@ -760,7 +897,6 @@ class OffscreenFrameExtractor(
 
             pBuf.rewind()
 
-            // Create a fresh Bitmap for safe cross-process IPC delivery.
             val frameBitmap =
                 Bitmap.createBitmap(
                     width,
@@ -774,7 +910,6 @@ class OffscreenFrameExtractor(
 
             val count = ++frameCount
 
-            // SurfaceTexture.getTimestamp() returns nanoseconds.
             val timestampUs =
                 st.getTimestamp() / 1000L
 
@@ -808,7 +943,15 @@ class OffscreenFrameExtractor(
         shaderCode: String
     ): Int {
         val shader =
-            GLES20.glCreateShader(type)
+            GLES20.glCreateShader(
+                type
+            )
+
+        if (shader == 0) {
+            throw RuntimeException(
+                "glCreateShader failed for type=$type"
+            )
+        }
 
         GLES20.glShaderSource(
             shader,
@@ -847,71 +990,107 @@ class OffscreenFrameExtractor(
     }
 
     fun release() {
-        if (!isReleased) {
-            isReleased = true
+        if (isReleased) {
+            return
+        }
 
-            glHandler?.post {
-                try {
+        isReleased = true
+
+        val handler = glHandler
+
+        if (handler == null) {
+            return
+        }
+
+        handler.post {
+            try {
+                if (
+                    eglDisplay != EGL14.EGL_NO_DISPLAY &&
+                    eglContext != EGL14.EGL_NO_CONTEXT &&
+                    eglSurface != EGL14.EGL_NO_SURFACE
+                ) {
                     EGL14.eglMakeCurrent(
                         eglDisplay,
                         eglSurface,
                         eglSurface,
                         eglContext
                     )
+                }
 
-                    if (programId != 0) {
-                        GLES20.glDeleteProgram(
-                            programId
-                        )
-                        programId = 0
-                    }
+                if (programId != 0) {
+                    GLES20.glDeleteProgram(
+                        programId
+                    )
 
-                    if (fboId != 0) {
-                        GLES20.glDeleteFramebuffers(
-                            1,
-                            intArrayOf(fboId),
-                            0
-                        )
-                        fboId = 0
-                    }
+                    programId = 0
+                }
 
-                    if (fboTextureId != 0) {
-                        GLES20.glDeleteTextures(
-                            1,
-                            intArrayOf(fboTextureId),
-                            0
-                        )
-                        fboTextureId = 0
-                    }
+                if (fboId != 0) {
+                    GLES20.glDeleteFramebuffers(
+                        1,
+                        intArrayOf(fboId),
+                        0
+                    )
 
-                    if (oesTextureId != 0) {
-                        GLES20.glDeleteTextures(
-                            1,
-                            intArrayOf(oesTextureId),
-                            0
-                        )
-                        oesTextureId = 0
-                    }
+                    fboId = 0
+                }
 
-                    outputSurface?.release()
-                    outputSurface = null
+                if (fboTextureId != 0) {
+                    GLES20.glDeleteTextures(
+                        1,
+                        intArrayOf(fboTextureId),
+                        0
+                    )
 
-                    surfaceTexture?.release()
-                    surfaceTexture = null
+                    fboTextureId = 0
+                }
 
-                    reusableBitmap?.recycle()
-                    reusableBitmap = null
+                if (oesTextureId != 0) {
+                    GLES20.glDeleteTextures(
+                        1,
+                        intArrayOf(oesTextureId),
+                        0
+                    )
 
+                    oesTextureId = 0
+                }
+
+                outputSurface?.release()
+                outputSurface = null
+
+                surfaceTexture?.release()
+                surfaceTexture = null
+
+                reusableBitmap?.recycle()
+                reusableBitmap = null
+
+                pixelBuffer = null
+                vertexBuffer = null
+                textureBuffer = null
+
+                if (
+                    eglDisplay != EGL14.EGL_NO_DISPLAY &&
+                    eglSurface != EGL14.EGL_NO_SURFACE
+                ) {
                     EGL14.eglDestroySurface(
                         eglDisplay,
                         eglSurface
                     )
+                }
 
+                if (
+                    eglDisplay != EGL14.EGL_NO_DISPLAY &&
+                    eglContext != EGL14.EGL_NO_CONTEXT
+                ) {
                     EGL14.eglDestroyContext(
                         eglDisplay,
                         eglContext
                     )
+                }
 
+                if (
+                    eglDisplay != EGL14.EGL_NO_DISPLAY
+                ) {
                     EGL14.eglMakeCurrent(
                         eglDisplay,
                         EGL14.EGL_NO_SURFACE,
@@ -922,27 +1101,29 @@ class OffscreenFrameExtractor(
                     EGL14.eglTerminate(
                         eglDisplay
                     )
-
-                    eglDisplay =
-                        EGL14.EGL_NO_DISPLAY
-
-                    eglContext =
-                        EGL14.EGL_NO_CONTEXT
-
-                    eglSurface =
-                        EGL14.EGL_NO_SURFACE
-                } catch (e: Throwable) {
-                    Log.w(
-                        TAG,
-                        "Error releasing GL resources: ${e.message}"
-                    )
-                } finally {
-                    glThread?.quitSafely()
-                    glThread = null
-                    glHandler = null
                 }
+
+                eglDisplay =
+                    EGL14.EGL_NO_DISPLAY
+
+                eglContext =
+                    EGL14.EGL_NO_CONTEXT
+
+                eglSurface =
+                    EGL14.EGL_NO_SURFACE
+
+                isInitialized = false
+            } catch (e: Throwable) {
+                Log.w(
+                    TAG,
+                    "Error releasing GL resources: ${e.message}",
+                    e
+                )
+            } finally {
+                glThread?.quitSafely()
+                glThread = null
+                glHandler = null
             }
         }
     }
 }
-```

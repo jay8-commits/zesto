@@ -1,4 +1,3 @@
 <resources>
     <string name="app_name">Zesto</string>
-    <string name="xposed_description">Zesto Camera Virtualization Module</string>
 </resources>

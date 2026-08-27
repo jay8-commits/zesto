@@ -1,59 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <queries>
+        <package android:name="net.sourceforge.opencamera" />
+        <package android:name="com.android.camera" />
+        <package android:name="com.android.camera2" />
+        <package android:name="com.google.android.GoogleCamera" />
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.VIDEO_CAPTURE" />
+        </intent>
+    </queries>
 
     <application
-        android:name=".ZestoApplication"
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.MyApplication">
 
+        <!-- LSPosed / LSPatch Xposed Module Metadata -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="Zesto Camera Virtualization Module" />
+            android:value="Zesto Camera Virtualization Hook - Injects real-time OBS RTSP streams into camera pipelines" />
         <meta-data
             android:name="xposedminversion"
-            android:value="82" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposed_scope" />
+            android:value="54" />
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.Material.NoActionBar">
+            android:label="@string/app_name"
+            android:theme="@style/Theme.MyApplication">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!-- Controlled Camera Test Target Activity -->
         <activity
-            android:name=".ui.harness.ControlledCameraTestActivity"
-            android:exported="false"
-            android:label="Controlled Camera Test Target" />
+            android:name="com.example.zesto.testtarget.ControlledCameraTestActivity"
+            android:exported="true"
+            android:label="Zesto Test Target"
+            android:theme="@style/Theme.MyApplication" />
 
+        <!-- Background Video Ingestion & Decoder Streaming Service -->
         <service
-            android:name=".service.ZestoStreamingService"
-            android:exported="true"
-            android:foregroundServiceType="camera" />
+            android:name="com.example.zesto.service.ZestoStreamingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Cross-Process Frame IPC ContentProvider -->
         <provider
-            android:name=".bridge.ZestoFrameProvider"
-            android:authorities="com.zesto.app.frameprovider"
+            android:name="com.example.zesto.frame.ZestoFrameContentProvider"
+            android:authorities="com.example.zesto.frameprovider"
             android:exported="true"
+            android:multiprocess="false"
             android:grantUriPermissions="true" />
 
     </application>
 
 </manifest>
+

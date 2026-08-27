@@ -13,7 +13,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Zesto">
+        android:theme="@android:style/Theme.Material.NoActionBar">
 
         <meta-data
             android:name="xposedmodule"
@@ -23,7 +23,7 @@
             android:value="Zesto Camera Virtualization Module" />
         <meta-data
             android:name="xposedminversion"
-            android:value="93" />
+            android:value="82" />
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />
@@ -31,7 +31,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.Zesto">
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

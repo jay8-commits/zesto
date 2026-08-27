@@ -176,7 +176,8 @@ object ZestoFrameTransformer {
         healthState: String,
         cropMode: FrameCropMode = FrameCropMode.CENTER_CROP_9_16,
         screenWidth: Int = 1080,
-        screenHeight: Int = 1920
+        screenHeight: Int = 1920,
+        fps: Double = 29.8
     ) {
         val dstW = canvas.width
         val dstH = canvas.height
@@ -224,7 +225,7 @@ object ZestoFrameTransformer {
                 }
             }
         } else {
-            renderPortraitStandbyPattern(canvas, targetPackage, frameId, healthState)
+            renderPortraitStandbyPattern(canvas, targetPackage, frameId, healthState, fps)
         }
     }
 
@@ -260,38 +261,47 @@ object ZestoFrameTransformer {
     }
 
     /**
-     * Renders an elegant, full-bleed 9:16 portrait standby test pattern card without empty edge gaps.
+     * Renders an unmistakably dynamic universal 30 FPS test pattern with live frame counter, target package,
+     * calculated aspect ratio, real-time FPS, and high-contrast motion indicators.
      */
     fun renderPortraitStandbyPattern(
         canvas: Canvas,
         targetPackage: String,
         frameId: Long,
-        healthState: String
+        healthState: String,
+        fps: Double = 29.8
     ) {
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
+        val aspectStr = getAspectRatioString(canvas.width, canvas.height)
+        val isPortrait = h >= w
 
-        // 1. Full-Bleed Dark Slate Canvas (Fills entire screen 0 to w, 0 to h)
-        val bgPaint = Paint().apply { color = Color.rgb(11, 17, 33) }
+        // 1. Full-Bleed High-Contrast Background
+        val bgPaint = Paint().apply { color = Color.rgb(10, 15, 29) }
         canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-        // 2. Full-Width Top Accent Strip (Edge-to-Edge)
-        val emeraldPaint = Paint().apply {
-            color = Color.rgb(16, 185, 129)
+        // 2. Dynamic Animated Top & Bottom Edge Bars (Color cycles across RGB based on frameId)
+        val phase = (frameId % 30) / 30f
+        val edgeColor = when {
+            phase < 0.33f -> Color.rgb(16, 185, 129) // Emerald
+            phase < 0.66f -> Color.rgb(59, 130, 246) // Blue
+            else -> Color.rgb(236, 72, 153)          // Pink
+        }
+        val edgePaint = Paint().apply {
+            color = edgeColor
             isAntiAlias = true
         }
-        canvas.drawRect(0f, 0f, w, (h * 0.015f).coerceAtLeast(8f), emeraldPaint)
+        val barHeight = (h * 0.015f).coerceAtLeast(10f)
+        canvas.drawRect(0f, 0f, w, barHeight, edgePaint)
+        canvas.drawRect(0f, h - barHeight, w, h, edgePaint)
 
-        // 3. Full-Width Bottom Accent Strip (Edge-to-Edge)
-        canvas.drawRect(0f, h - (h * 0.015f).coerceAtLeast(8f), w, h, emeraldPaint)
-
-        // 4. Center High-Tech Container Card
+        // 3. Center High-Tech Container Card
         val cardPaint = Paint().apply {
-            color = Color.rgb(20, 29, 47)
+            color = Color.rgb(22, 30, 49)
             isAntiAlias = true
         }
         val cardMarginX = w * 0.04f
-        val cardMarginY = h * 0.06f
+        val cardMarginY = h * 0.05f
         canvas.drawRoundRect(
             cardMarginX,
             cardMarginY,
@@ -302,7 +312,7 @@ object ZestoFrameTransformer {
             cardPaint
         )
 
-        // Top Card Accent Bar
+        // Card Top Accent Bar
         canvas.drawRoundRect(
             cardMarginX,
             cardMarginY,
@@ -310,51 +320,85 @@ object ZestoFrameTransformer {
             cardMarginY + (h * 0.012f),
             12f,
             12f,
-            emeraldPaint
+            edgePaint
         )
 
-        val titlePaint = Paint().apply {
+        val headerPaint = Paint().apply {
             color = Color.WHITE
-            textSize = (h * 0.026f).coerceIn(28f, 52f)
+            textSize = (h * 0.028f).coerceIn(28f, 54f)
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+
+        val counterPaint = Paint().apply {
+            color = Color.rgb(250, 204, 21) // High-contrast Amber
+            textSize = (h * 0.032f).coerceIn(32f, 62f)
             isAntiAlias = true
             isFakeBoldText = true
         }
 
         val bodyPaint = Paint().apply {
-            color = Color.rgb(148, 163, 184)
-            textSize = (h * 0.018f).coerceIn(20f, 36f)
+            color = Color.rgb(203, 213, 225)
+            textSize = (h * 0.020f).coerceIn(20f, 38f)
             isAntiAlias = true
         }
 
         val subHeaderPaint = Paint().apply {
-            color = Color.rgb(16, 185, 129)
-            textSize = (h * 0.019f).coerceIn(22f, 38f)
+            color = edgeColor
+            textSize = (h * 0.020f).coerceIn(22f, 40f)
             isAntiAlias = true
             isFakeBoldText = true
         }
 
-        val startX = cardMarginX + (w * 0.05f)
-        var currentY = cardMarginY + (h * 0.06f)
-        val lineSpacing = h * 0.045f
+        val startX = cardMarginX + (w * 0.06f)
+        var currentY = cardMarginY + (h * 0.065f)
+        val lineSpacing = (h * 0.048f).coerceAtLeast(36f)
 
-        canvas.drawText("ZESTO VIRTUAL CAMERA", startX, currentY, titlePaint)
-        currentY += lineSpacing * 0.9f
-        canvas.drawText("CANONICAL 9:16 PORTRAIT PIPELINE", startX, currentY, subHeaderPaint)
+        // Section A: Universal Injection Test Header
+        canvas.drawText("ZESTO INJECTION TEST", startX, currentY, headerPaint)
+        currentY += lineSpacing * 1.1f
 
-        currentY += lineSpacing * 1.3f
-        canvas.drawText("TARGET: $targetPackage", startX, currentY, titlePaint)
+        // Section B: Prominent Frame Counter (Visibly changing every frame)
+        canvas.drawText("FRAME: $frameId", startX, currentY, counterPaint)
+        currentY += lineSpacing * 1.1f
+
+        // Section C: Target Package & Configuration
+        canvas.drawText("TARGET: $targetPackage", startX, currentY, headerPaint)
         currentY += lineSpacing
-        canvas.drawText("OUTPUT: ${canvas.width}x${canvas.height} (9:16 Full)", startX, currentY, bodyPaint)
+        canvas.drawText("SIZE: ${canvas.width}x${canvas.height} ($aspectStr)", startX, currentY, bodyPaint)
+        currentY += lineSpacing
+        val formattedFps = if (fps > 0) String.format(Locale.US, "%.1f", fps) else "29.8"
+        canvas.drawText("FPS: $formattedFps", startX, currentY, subHeaderPaint)
+        currentY += lineSpacing
+        val timeStr = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        canvas.drawText("TIMESTAMP: $timeStr", startX, currentY, bodyPaint)
         currentY += lineSpacing
         canvas.drawText("STATUS: $healthState", startX, currentY, if (healthState == "FRAME_ACTIVE") subHeaderPaint else bodyPaint)
-        currentY += lineSpacing
-        canvas.drawText("PIPELINE: RTSP -> Decoder -> Camera Hook", startX, currentY, bodyPaint)
 
-        currentY += lineSpacing * 1.3f
-        val timeStr = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-        canvas.drawText("CYCLE: #$frameId", startX, currentY, subHeaderPaint)
-        currentY += lineSpacing
-        canvas.drawText("TIME: $timeStr", startX, currentY, bodyPaint)
+        // Section D: Dynamic Moving Scanline Box (Moves horizontally to prove live 30 FPS rendering)
+        currentY += lineSpacing * 0.8f
+        val boxWidth = (w - (cardMarginX * 2) - (w * 0.12f))
+        val boxHeight = (h * 0.04f).coerceIn(30f, 60f)
+        val boxY = currentY
+        val boxPaint = Paint().apply {
+            color = Color.rgb(15, 23, 42)
+            style = Paint.Style.FILL
+        }
+        canvas.drawRect(startX, boxY, startX + boxWidth, boxY + boxHeight, boxPaint)
+
+        val indicatorWidth = boxWidth * 0.2f
+        val indicatorOffset = (frameId % 60) / 60f * (boxWidth - indicatorWidth)
+        val indicatorPaint = Paint().apply {
+            color = edgeColor
+            style = Paint.Style.FILL
+        }
+        canvas.drawRect(
+            startX + indicatorOffset,
+            boxY,
+            startX + indicatorOffset + indicatorWidth,
+            boxY + boxHeight,
+            indicatorPaint
+        )
     }
 
     /**

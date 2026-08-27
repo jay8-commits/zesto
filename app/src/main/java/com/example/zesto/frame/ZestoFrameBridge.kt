@@ -53,8 +53,8 @@ object ZestoFrameBridge {
         val frameId: Long = 0L,
         val timestampUs: Long = 0L,
         val timestampEpochMs: Long = 0L,
-        val width: Int = 1280,
-        val height: Int = 720,
+        val width: Int = 1080,
+        val height: Int = 1920,
         val format: PixelFormat = PixelFormat.RGBA_8888,
         val buffer: ByteArray? = null,
         val bitmap: Bitmap? = null
@@ -77,6 +77,10 @@ object ZestoFrameBridge {
     private val providerRunning = AtomicBoolean(false)
     private val bridgeReady = AtomicBoolean(false)
 
+    // Telemetry FPS calculation
+    private val recentFrameTimestamps = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+    private val localTestPatternActive = AtomicBoolean(false)
+
     val totalFramesReceived: Long get() = frameCounter.get()
     val totalFramesDelivered: Long get() = deliveredCounter.get()
     val totalFramesDropped: Long get() = droppedCounter.get()
@@ -84,6 +88,27 @@ object ZestoFrameBridge {
     val reconnectCount: Int get() = reconnectCounter.get()
     val isProviderRunning: Boolean get() = providerRunning.get()
     val isBridgeReady: Boolean get() = bridgeReady.get()
+    val isTestPatternMode: Boolean get() = localTestPatternActive.get()
+
+    fun setTestPatternMode(enabled: Boolean) {
+        localTestPatternActive.set(enabled)
+        Log.i(TAG, "[TEST_PATTERN_MODE] Universal 30 FPS Local Test Pattern Generator set to: $enabled")
+    }
+
+    fun calculateBridgeFps(): Double {
+        val now = System.currentTimeMillis()
+        while (recentFrameTimestamps.isNotEmpty() && (now - (recentFrameTimestamps.peek() ?: 0L)) > 2000L) {
+            recentFrameTimestamps.poll()
+        }
+        val count = recentFrameTimestamps.size
+        return if (count >= 2) {
+            val oldest = recentFrameTimestamps.peek() ?: now
+            val span = (now - oldest).coerceAtLeast(100L)
+            (count.toDouble() * 1000.0) / span.toDouble()
+        } else {
+            0.0
+        }
+    }
 
     fun setBridgeReady(ready: Boolean) {
         if (bridgeReady.compareAndSet(!ready, ready)) {
@@ -126,6 +151,7 @@ object ZestoFrameBridge {
     ) {
         val nowMs = System.currentTimeMillis()
         lastFrameTimeMs.set(nowMs)
+        recentFrameTimestamps.offer(nowMs)
         val id = frameCounter.incrementAndGet()
         _latestFrame.value = FrameData(
             frameId = id,
@@ -144,6 +170,7 @@ object ZestoFrameBridge {
             setBridgeReady(true)
         }
         if (id == 1L || id % 60L == 0L) {
+            Log.i(TAG, "[FRAME_INJECTED] Frame #$id (${width}x${height}, format=$format) injected into bridge")
             Log.i(TAG, "[FRAME_PIPELINE] frames received=$id, frames delivered=${deliveredCounter.get()}, frames dropped=${droppedCounter.get()}, queue depth=1")
             Log.i(TAG, "[FRAME_BRIDGE_POSTED] Frame #$id (${width}x${height}, format=$format) posted to shared frame bridge.")
         }
@@ -179,7 +206,7 @@ object ZestoFrameBridge {
         return if (last == 0L) -1L else (System.currentTimeMillis() - last).coerceAtLeast(0L)
     }
 
-    fun getFrameHealthState(stalledTimeoutMs: Long = 1500L): FrameHealthState {
+    fun getFrameHealthState(stalledTimeoutMs: Long = 5000L): FrameHealthState {
         val last = lastFrameTimeMs.get()
         if (last == 0L || frameCounter.get() == 0L) {
             return FrameHealthState.NO_FRAME

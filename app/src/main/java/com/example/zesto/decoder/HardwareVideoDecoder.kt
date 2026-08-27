@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.SystemClock
+import android.util.Log
 import android.view.Surface
 import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
@@ -20,6 +21,10 @@ import java.util.concurrent.atomic.AtomicLong
  * Supports Surface-direct rendering for ultra-low latency and byte buffer output for frame extraction.
  */
 class HardwareVideoDecoder : VideoDecoder {
+
+    companion object {
+        private const val TAG = "HardwareVideoDecoder"
+    }
 
     private val _state = MutableStateFlow<DecoderState>(DecoderState.Uninitialized)
     override val state: StateFlow<DecoderState> = _state.asStateFlow()
@@ -189,6 +194,10 @@ class HardwareVideoDecoder : VideoDecoder {
                 val flags = if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 codec.queueInputBuffer(inputIndex, 0, length, timestampUs, flags)
 
+                if (frameNumber == 1L || frameNumber % 60L == 0L) {
+                    Log.i(TAG, "[FRAME_RECEIVED] RTSP packet #$frameNumber queued to decoder (size=${length}B, keyFrame=$isKeyFrame, pts=${timestampUs}us)")
+                }
+
                 drainOutput(codec, startTime)
                 true
             } else {
@@ -217,6 +226,9 @@ class HardwareVideoDecoder : VideoDecoder {
             if (outputSurface != null) {
                 // Direct render to preview surface (zero-copy)
                 codec.releaseOutputBuffer(outputIndex, true)
+                if (frameNumber == 1L || frameNumber % 60L == 0L) {
+                    Log.i(TAG, "[FRAME_CONVERTED] Decoded frame #$frameNumber (${activeWidth}x${activeHeight}) directly rendered to output Surface")
+                }
             } else {
                 // Extract ByteBuffer for frame consumers
                 val outputBuffer = codec.getOutputBuffer(outputIndex)
@@ -235,6 +247,9 @@ class HardwareVideoDecoder : VideoDecoder {
                         pixelFormat = PixelFormat.YUV420P,
                         buffer = frameBuffer
                     )
+                    if (frameNumber == 1L || frameNumber % 60L == 0L) {
+                        Log.i(TAG, "[FRAME_CONVERTED] Decoded frame #$frameNumber (${activeWidth}x${activeHeight}, YUV420P, size=${bufferInfo.size}B) extracted to ByteBuffer")
+                    }
                     decodeListener?.onFrameDecoded(frame)
                 }
                 codec.releaseOutputBuffer(outputIndex, false)

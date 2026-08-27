@@ -101,6 +101,9 @@ class ZestoFrameContentProvider : ContentProvider() {
 
         when (method) {
             METHOD_GET_LATEST_FRAME, "getFrameBitmap" -> {
+                val now = System.currentTimeMillis()
+                val lastTimestamp = ZestoFrameBridge.lastFrameArrivalEpochMs
+                val bridgeFps = ZestoFrameBridge.calculateBridgeFps()
                 result.putLong(KEY_FRAME_ID, frame.frameId)
                 result.putInt(KEY_WIDTH, frame.width)
                 result.putInt(KEY_HEIGHT, frame.height)
@@ -108,12 +111,20 @@ class ZestoFrameContentProvider : ContentProvider() {
                 result.putString(KEY_FORMAT, frame.format.name)
                 result.putString(KEY_HEALTH_STATE, health.name)
                 result.putLong(KEY_MS_SINCE_LAST_FRAME, msAgo)
+                result.putLong("current_time_ms", now)
+                result.putLong("last_frame_timestamp_ms", lastTimestamp)
+                result.putDouble("bridge_fps", bridgeFps)
+                result.putBoolean("test_pattern_mode", ZestoFrameBridge.isTestPatternMode)
                 result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
                 if (frame.bitmap != null) {
                     result.putParcelable(KEY_BITMAP, frame.bitmap)
                 }
                 if (buffer != null) {
                     result.putByteArray(KEY_BUFFER, buffer)
+                }
+
+                if (frame.frameId == 1L || frame.frameId % 60L == 0L) {
+                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} size=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms")
                 }
             }
             METHOD_GET_FRAME_META -> {

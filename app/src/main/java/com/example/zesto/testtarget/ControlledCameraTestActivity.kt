@@ -119,8 +119,8 @@ class ControlledCameraTestActivity : ComponentActivity() {
 
         Log.i(TAG, "[TARGET_PROCESS_ATTACHED] Test target process initialized: ${packageName}")
 
-        // Attach Camera2 hook to classloader
-        Camera2Hook.attachHook(classLoader)
+        // Attach Camera2 hook to classloader with actual package name
+        Camera2Hook.attachHook(classLoader, packageName)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 101)
@@ -183,7 +183,7 @@ class ControlledCameraTestActivity : ComponentActivity() {
 
     private fun createPreviewSession(textureView: TextureView) {
         val texture = textureView.surfaceTexture ?: return
-        texture.setDefaultBufferSize(1280, 720)
+        texture.setDefaultBufferSize(1080, 1920)
         val surface = Surface(texture)
 
         // Signal session configured to Camera2Hook
@@ -260,7 +260,7 @@ fun ControlledCameraTestScreen(
     var frameCount by remember { mutableLongStateOf(0L) }
     var droppedFrames by remember { mutableLongStateOf(0L) }
     var measuredFps by remember { mutableDoubleStateOf(0.0) }
-    var activeResolution by remember { mutableStateOf("1280 x 720") }
+    var activeResolution by remember { mutableStateOf("1080 x 1920") }
     var healthState by remember { mutableStateOf(FrameHealthState.NO_FRAME) }
     var msSinceLastFrame by remember { mutableLongStateOf(-1L) }
     var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
@@ -302,10 +302,8 @@ fun ControlledCameraTestScreen(
                     val canvas: Canvas? = tv.lockCanvas()
                     if (canvas != null) {
                         try {
-                            if (frame.bitmap != null && !frame.bitmap.isRecycled) {
-                                virtualFramesInSecond++
-                                activeResolution = "${frame.width} x ${frame.height}"
-                            }
+                            virtualFramesInSecond++
+                            activeResolution = "${frame.width} x ${frame.height}"
                             com.example.zesto.frame.ZestoFrameTransformer.renderToCanvas(
                                 canvas = canvas,
                                 bitmap = frame.bitmap,
@@ -329,7 +327,7 @@ fun ControlledCameraTestScreen(
         if (!isVirtualInjectionActive) {
             frameCount = physicalFramesRendered
             healthState = if (physicalFramesRendered > 0) FrameHealthState.FRAME_ACTIVE else FrameHealthState.NO_FRAME
-            activeResolution = "1280 x 720"
+            activeResolution = "1080 x 1920"
         }
     }
 

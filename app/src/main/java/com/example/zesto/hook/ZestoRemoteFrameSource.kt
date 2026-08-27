@@ -125,11 +125,23 @@ object ZestoRemoteFrameSource {
                 val frameId = bundle.getLong("frame_id", 0L)
                 val width = bundle.getInt("width", 1080)
                 val height = bundle.getInt("height", 1920)
+                val timestampUs = bundle.getLong("timestamp_us", 0L)
+                val buffer = bundle.getByteArray("buffer")
+                val bufferSize = buffer?.size ?: (if (bitmap != null) bitmap.byteCount else 0)
 
                 if (!isProviderAvailable) {
                     isProviderAvailable = true
                     consecutiveErrors = 0
                     Log.i(TAG, "[FRAME_BRIDGE] bridge connected (provider available=$providerRunning, streaming=$isStreaming)")
+                }
+
+                if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                    lastIpcLogMs = now
+                    Log.i(TAG, "[IPC_FRAME_REQUEST] target=$attachedPackageName requested frame via ContentResolver.call")
+                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=$frameId dimensions=${width}x${height} format=${bundle.getString("format", "RGBA_8888")}")
+                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${bitmap != null}")
+                    Log.i(TAG, "[IPC_FRAME_TIMESTAMP] timestampUs=${timestampUs}us health=$healthState")
+                    Log.i(TAG, "[IPC_FRAME_COUNTER] bridgeFrameId=$frameId targetPackage=$attachedPackageName")
                 }
 
                 RemoteFrameResult(

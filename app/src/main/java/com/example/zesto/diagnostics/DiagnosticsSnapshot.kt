@@ -40,13 +40,17 @@ enum class BoundaryDiagnosticStage(val code: String, val description: String) {
     RTSP_CONNECTED("RTSP_CONNECTED", "Transport connected to RTSP source stream"),
     VIDEO_TRACK_DETECTED("VIDEO_TRACK_DETECTED", "SDP video track identified with MIME type and resolution"),
     DECODER_INITIALIZED("DECODER_INITIALIZED", "Video decoder configured and initialized"),
+    FRAME_RECEIVED("FRAME_RECEIVED", "RTSP packet received and queued for decode"),
     VIDEO_FRAME_DECODED("VIDEO_FRAME_DECODED", "Hardware/software decoder yielded video frame"),
+    FRAME_CONVERTED("FRAME_CONVERTED", "Decoded video frame converted to format-normalized pixel buffer"),
+    FRAME_INJECTED("FRAME_INJECTED", "Frame injected into shared bridge and cross-process provider"),
     FRAME_BRIDGE_POSTED("FRAME_BRIDGE_POSTED", "Decoded frame committed to shared ZestoFrameBridge"),
     PATCH_MANIFEST_APPLICATION("PATCH_MANIFEST_APPLICATION", "Target application manifest Application class verified and matched to DexClassLoader"),
     TARGET_PROCESS_ATTACHED("TARGET_PROCESS_ATTACHED", "Zesto hook attached to target application process"),
     CAMERA2_HOOK_INSTALLED("CAMERA2_HOOK_INSTALLED", "Camera2 API reflection/bytecode hook active"),
     CAMERA2_DEVICE_OPEN_INTERCEPTED("CAMERA2_DEVICE_OPEN_INTERCEPTED", "Target openCamera call intercepted"),
     FRAME_SUBSTITUTION_ACTIVE("FRAME_SUBSTITUTION_ACTIVE", "Frame pump rendering OBS frames onto target surface"),
+    FRAME_CONSUMED("FRAME_CONSUMED", "Target camera surface consumed and rendered frame buffer"),
     TARGET_PREVIEW_RECEIVED_FRAME("TARGET_PREVIEW_RECEIVED_FRAME", "Target view received and displayed injected frame")
 }
 

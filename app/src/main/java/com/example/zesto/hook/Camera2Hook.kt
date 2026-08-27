@@ -9,6 +9,7 @@ import com.example.zesto.frame.FrameCropMode
 import com.example.zesto.frame.ZestoFrameTransformer
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -64,9 +65,12 @@ object Camera2Hook {
             // 2. Camera2 CameraDevice session hooks
             hookCount += hookCameraDevice(classLoader, targetPackage)
 
+            // 3. Camera2 CaptureRequest and CaptureSession repeating request hooks
+            hookCount += hookCameraSessionRequests(classLoader, targetPackage)
+
             currentStatus = HookStatus.HOOK_REGISTERED
             val installMsg = "Installed $hookCount Camera2 method interception hooks for $targetPackage"
-            Log.i(TAG, "[CAMERA2_HOOK_INSTALLED] $installMsg")
+            Log.i(TAG, "[CAMERA2_HOOK_INSTALLED] package=$targetPackage $installMsg")
             ZestoRemoteFrameSource.reportMilestone("CAMERA2_HOOK_INSTALLED", installMsg)
         } catch (e: Throwable) {
             currentStatus = HookStatus.HOOK_FAILED
@@ -239,6 +243,102 @@ object Camera2Hook {
         return installed
     }
 
+    private fun hookCameraSessionRequests(classLoader: ClassLoader, targetPackage: String): Int {
+        var installed = 0
+
+        // 1. Hook CameraDevice.createCaptureRequest(int templateType)
+        try {
+            val deviceClass = Class.forName("android.hardware.camera2.CameraDevice", false, classLoader)
+            XposedHelpers.findAndHookMethod(
+                deviceClass,
+                "createCaptureRequest",
+                Int::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val template = param.args.getOrNull(0) as? Int ?: -1
+                        Log.d(TAG, "[CAPTURE_REQUEST_CREATED] CameraDevice.createCaptureRequest(template=$template) in $targetPackage")
+                    }
+                }
+            )
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.createCaptureRequest(int)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[HOOK_FAIL] CameraDevice.createCaptureRequest: ${t.message}")
+        }
+
+        // 2. Hook CaptureRequest.Builder.addTarget(Surface)
+        try {
+            val builderClass = Class.forName("android.hardware.camera2.CaptureRequest\$Builder", false, classLoader)
+            XposedHelpers.findAndHookMethod(
+                builderClass,
+                "addTarget",
+                Surface::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val surface = param.args.getOrNull(0) as? Surface
+                        if (surface != null) {
+                            val hash = System.identityHashCode(surface).toString(16)
+                            Log.i(TAG, "[SURFACE_CAPTURE_REQUEST_TARGET] Target Surface added to CaptureRequest: hash=@$hash valid=${surface.isValid} in $targetPackage")
+                            Log.i(TAG, "[SURFACE_DISCOVERED] Discovered CaptureRequest target Surface: hash=@$hash class=${surface.javaClass.simpleName} valid=${surface.isValid}")
+                        }
+                    }
+                }
+            )
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CaptureRequest.Builder.addTarget(Surface)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[HOOK_FAIL] CaptureRequest.Builder.addTarget: ${t.message}")
+        }
+
+        // 3. Hook CameraCaptureSession.setRepeatingRequest
+        try {
+            val sessionClass = Class.forName("android.hardware.camera2.CameraCaptureSession", false, classLoader)
+            val captureCallbackClass = Class.forName("android.hardware.camera2.CameraCaptureSession\$CaptureCallback", false, classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                sessionClass,
+                "setRepeatingRequest",
+                Class.forName("android.hardware.camera2.CaptureRequest", false, classLoader),
+                captureCallbackClass,
+                Handler::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[REPEATING_REQUEST_STARTED] CameraCaptureSession.setRepeatingRequest invoked in $targetPackage")
+                    }
+                }
+            )
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraCaptureSession.setRepeatingRequest(Request, Callback, Handler)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[HOOK_FAIL] CameraCaptureSession.setRepeatingRequest: ${t.message}")
+        }
+
+        // 4. Hook CameraCaptureSession.capture
+        try {
+            val sessionClass = Class.forName("android.hardware.camera2.CameraCaptureSession", false, classLoader)
+            val captureCallbackClass = Class.forName("android.hardware.camera2.CameraCaptureSession\$CaptureCallback", false, classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                sessionClass,
+                "capture",
+                Class.forName("android.hardware.camera2.CaptureRequest", false, classLoader),
+                captureCallbackClass,
+                Handler::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAPTURE_REQUEST_INVOKED] CameraCaptureSession.capture invoked in $targetPackage")
+                    }
+                }
+            )
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraCaptureSession.capture(Request, Callback, Handler)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[HOOK_FAIL] CameraCaptureSession.capture: ${t.message}")
+        }
+
+        return installed
+    }
+
     /**
      * Triggered when target process opens a CameraDevice.
      */
@@ -298,12 +398,24 @@ object Camera2Hook {
 
         pumpTask = renderExecutor.submit {
             var cycleCount = 0L
+            var lastFpsCalcMs = System.currentTimeMillis()
+            var framesInSecond = 0L
+            var currentTargetFps = 29.8
 
             while (isPumping.get()) {
                 try {
                     val frameResult = ZestoRemoteFrameSource.fetchLatestFrame()
                     val bitmap = frameResult.bitmap
                     cycleCount++
+                    framesInSecond++
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastFpsCalcMs >= 1000L) {
+                        val elapsed = now - lastFpsCalcMs
+                        currentTargetFps = (framesInSecond * 1000.0) / elapsed.toDouble()
+                        framesInSecond = 0L
+                        lastFpsCalcMs = now
+                    }
 
                     var hasValidSurface = false
                     for (surface in surfaces) {
@@ -314,7 +426,13 @@ object Camera2Hook {
                         hasValidSurface = true
 
                         var canvas: Canvas? = null
+                        val hash = System.identityHashCode(surface).toString(16)
                         try {
+                            if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                Log.i(TAG, "[FRAME_RENDER_STARTED] Rendering cycle #$cycleCount onto Surface hash=@$hash in $targetPackage")
+                                Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
+                            }
+
                             canvas = surface.lockCanvas(null)
                             if (canvas != null) {
                                 ZestoFrameTransformer.renderToCanvas(
@@ -325,17 +443,23 @@ object Camera2Hook {
                                     healthState = frameResult.healthState,
                                     cropMode = FrameCropMode.CENTER_CROP_9_16
                                 )
+                                if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                    Log.i(TAG, "[FRAME_RENDERED_TO_SURFACE] Render completed on canvas ${canvas.width}x${canvas.height} for target=$targetPackage")
+                                }
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "Canvas render exception: ${e.message}")
+                            Log.w(TAG, "Canvas render exception on surface=@$hash: ${e.message}")
                         } finally {
                             if (canvas != null) {
                                 try {
                                     surface.unlockCanvasAndPost(canvas)
                                     val count = substitutedFramesCount.incrementAndGet()
                                     if (count == 1L || count % 60L == 0L) {
-                                        val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId})"
+                                        val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId}) @ ${String.format(Locale.US, "%.1f", currentTargetFps)} FPS"
+                                        Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] $logMsg")
+                                        Log.i(TAG, "[FRAME_CONSUMED] $logMsg")
                                         Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
+                                        ZestoRemoteFrameSource.reportMilestone("FRAME_CONSUMED", logMsg)
                                         ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
                                     }
                                 } catch (e: Exception) {

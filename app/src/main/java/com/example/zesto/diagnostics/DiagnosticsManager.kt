@@ -28,15 +28,19 @@ class DiagnosticsManager(
         logger.info(
             when (stage) {
                 BoundaryDiagnosticStage.RTSP_CONNECTED,
-                BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED -> Subsystem.TRANSPORT
+                BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED,
+                BoundaryDiagnosticStage.FRAME_RECEIVED -> Subsystem.TRANSPORT
                 BoundaryDiagnosticStage.DECODER_INITIALIZED,
-                BoundaryDiagnosticStage.VIDEO_FRAME_DECODED -> Subsystem.DECODER
+                BoundaryDiagnosticStage.VIDEO_FRAME_DECODED,
+                BoundaryDiagnosticStage.FRAME_CONVERTED -> Subsystem.DECODER
+                BoundaryDiagnosticStage.FRAME_INJECTED,
                 BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED -> Subsystem.FRAME_PIPELINE
                 BoundaryDiagnosticStage.PATCH_MANIFEST_APPLICATION,
                 BoundaryDiagnosticStage.TARGET_PROCESS_ATTACHED -> Subsystem.TARGET_COMPATIBILITY
                 BoundaryDiagnosticStage.CAMERA2_HOOK_INSTALLED,
                 BoundaryDiagnosticStage.CAMERA2_DEVICE_OPEN_INTERCEPTED,
                 BoundaryDiagnosticStage.FRAME_SUBSTITUTION_ACTIVE,
+                BoundaryDiagnosticStage.FRAME_CONSUMED,
                 BoundaryDiagnosticStage.TARGET_PREVIEW_RECEIVED_FRAME -> Subsystem.VIRTUALIZATION
             },
             "[${stage.code}] ${stage.description}"

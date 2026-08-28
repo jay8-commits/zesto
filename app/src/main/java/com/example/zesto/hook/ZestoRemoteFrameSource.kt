@@ -9,6 +9,8 @@ import android.util.Log
 import com.example.zesto.frame.FrameHealthState
 import com.example.zesto.frame.ZestoFrameBridge
 import com.example.zesto.frame.ZestoFrameTransformer
+import com.example.zesto.ipc.ZestoIpcSocketClient
+import com.example.zesto.ipc.ZestoSharedMemoryBridge
 
 /**
  * Data container for frames pulled from the local bridge or cross-process provider.
@@ -24,6 +26,12 @@ data class RemoteFrameResult(
 
 /**
  * Remote frame source and bi-directional diagnostics reporter for hooked target processes.
+ *
+ * Implements a 4-tier resilient IPC architecture:
+ * 1. Direct in-memory bridge (intra-process)
+ * 2. Linux Abstract Unix Domain Socket (high-performance, bypasses Android 11-15 package visibility)
+ * 3. Atomic Dual-Buffer Shared Memory (lock-free tear-free shared buffer)
+ * 4. ContentProvider ContentResolver IPC (standard Android IPC fallback)
  */
 object ZestoRemoteFrameSource {
     private const val TAG = "ZestoRemoteFrameSource"
@@ -94,15 +102,22 @@ object ZestoRemoteFrameSource {
     }
 
     /**
-     * Fetches the latest video frame either from in-memory bridge or cross-process IPC.
-     * Uses backoff when FrameProvider is unavailable to eliminate busy retry thrashing.
+     * Fetches the latest video frame through multi-tier IPC.
      */
     fun fetchLatestFrame(): RemoteFrameResult {
-        // 1. In-process direct bridge check (Fast-path when running in the same process)
+        val now = System.currentTimeMillis()
+
+        // -------------------------------------------------------------
+        // Tier 1: Direct in-process in-memory bridge check
+        // -------------------------------------------------------------
         val localFrame = ZestoFrameBridge.consumeLatestFrame()
         if (localFrame.bitmap != null && !localFrame.bitmap.isRecycled) {
             isProviderAvailable = true
             consecutiveErrors = 0
+            if (localFrame.frameId == 1L || localFrame.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                lastIpcLogMs = now
+                Log.i(TAG, "[IPC_TIER_LOCAL] Direct bridge frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height}")
+            }
             return RemoteFrameResult(
                 frameId = localFrame.frameId,
                 bitmap = localFrame.bitmap,
@@ -113,18 +128,57 @@ object ZestoRemoteFrameSource {
             )
         }
 
-        // 2. Cross-process IPC fetch from ZestoFrameContentProvider
-        val context = getTargetContext() ?: return RemoteFrameResult(
-            frameId = localFrame.frameId,
-            bitmap = null,
-            width = localFrame.width,
-            height = localFrame.height,
-            healthState = ZestoFrameBridge.getFrameHealthState().name,
-            isStreaming = false
-        )
+        // -------------------------------------------------------------
+        // Tier 2: Linux Abstract Unix Domain Socket (Primary cross-process transport)
+        // -------------------------------------------------------------
+        try {
+            val socketResult = ZestoIpcSocketClient.fetchLatestFrame()
+            if (socketResult != null && socketResult.bitmap != null && !socketResult.bitmap.isRecycled) {
+                isProviderAvailable = true
+                consecutiveErrors = 0
+                if (socketResult.frameId == 1L || socketResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                    lastIpcLogMs = now
+                    Log.i(TAG, "[IPC_TIER_SOCKET] Received frameId=${socketResult.frameId} res=${socketResult.width}x${socketResult.height} hasBitmap=true target=$attachedPackageName")
+                }
+                return socketResult
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Socket IPC attempt note: ${e.message}")
+        }
 
-        val now = System.currentTimeMillis()
-        // If provider was unavailable, enforce backoff interval instead of 30 FPS hammering
+        // -------------------------------------------------------------
+        // Tier 3: Atomic Dual-Buffer Shared Memory
+        // -------------------------------------------------------------
+        try {
+            val shmResult = ZestoSharedMemoryBridge.readLatestFrame()
+            if (shmResult != null && shmResult.bitmap != null && !shmResult.bitmap.isRecycled) {
+                isProviderAvailable = true
+                consecutiveErrors = 0
+                if (shmResult.frameId == 1L || shmResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                    lastIpcLogMs = now
+                    Log.i(TAG, "[IPC_TIER_SHARED_MEM] Received frameId=${shmResult.frameId} res=${shmResult.width}x${shmResult.height} hasBitmap=true target=$attachedPackageName")
+                }
+                return shmResult
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Shared memory IPC attempt note: ${e.message}")
+        }
+
+        // -------------------------------------------------------------
+        // Tier 4: ContentProvider ContentResolver IPC fallback
+        // -------------------------------------------------------------
+        val context = getTargetContext()
+        if (context == null) {
+            return RemoteFrameResult(
+                frameId = 0L,
+                bitmap = null,
+                width = 1080,
+                height = 1920,
+                healthState = "AWAITING_ZESTO_PROVIDER",
+                isStreaming = false
+            )
+        }
+
         if (!isProviderAvailable && now < nextProviderCheckMs) {
             return RemoteFrameResult(
                 frameId = 0L,
@@ -141,11 +195,13 @@ object ZestoRemoteFrameSource {
             try {
                 bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
             } catch (_: Throwable) {}
+
             if (bundle == null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 try {
                     bundle = context.contentResolver.call(AUTHORITY, "getLatestFrame", null, null)
                 } catch (_: Throwable) {}
             }
+
             if (bundle != null) {
                 try {
                     val cl = context.classLoader ?: ZestoRemoteFrameSource::class.java.classLoader ?: ClassLoader.getSystemClassLoader()
@@ -158,10 +214,7 @@ object ZestoRemoteFrameSource {
                 val frameId = bundle.getLong("frame_id", 0L)
                 val width = bundle.getInt("width", 1080)
                 val height = bundle.getInt("height", 1920)
-                val timestampUs = bundle.getLong("timestamp_us", 0L)
 
-                // Layer 1: High-reliability JPEG byte array in bundle (PRIMARY TRANSPORT)
-                var transportUsed = "NONE"
                 var finalBitmap: Bitmap? = null
 
                 val jpegBytes = bundle.getByteArray("jpeg_buffer") ?: bundle.getByteArray("buffer")
@@ -170,17 +223,10 @@ object ZestoRemoteFrameSource {
                         val decoded = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                         if (decoded != null && !decoded.isRecycled) {
                             finalBitmap = decoded
-                            transportUsed = "JPEG_BUFFER"
-                            if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
-                                Log.i(TAG, "[IPC_JPEG_DECODE_SUCCESS] frameId=$frameId bitmap=${decoded.width}x${decoded.height}")
-                            }
                         }
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Error decoding jpeg_buffer: ${e.message}")
-                    }
+                    } catch (_: Throwable) {}
                 }
 
-                // Layer 2: Direct Parcelable Bitmap (optional fallback)
                 if (finalBitmap == null || finalBitmap.isRecycled) {
                     try {
                         val bmp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -190,50 +236,28 @@ object ZestoRemoteFrameSource {
                             bundle.getParcelable<Bitmap>("bitmap")
                         }
                         if (bmp != null && !bmp.isRecycled) {
-                            transportUsed = "DIRECT_BITMAP"
                             finalBitmap = bmp
                         }
-                    } catch (e: Throwable) {
-                        Log.d(TAG, "Direct Parcelable Bitmap fallback note: ${e.message}")
-                    }
+                    } catch (_: Throwable) {}
                 }
 
-                // Layer 3: ContentProvider openInputStream fallback
                 if (finalBitmap == null || finalBitmap.isRecycled) {
                     try {
                         context.contentResolver.openInputStream(PROVIDER_URI)?.use { inputStream ->
                             val streamed = android.graphics.BitmapFactory.decodeStream(inputStream)
                             if (streamed != null && !streamed.isRecycled) {
                                 finalBitmap = streamed
-                                transportUsed = "PIPE_STREAM"
                             }
                         }
-                    } catch (e: Throwable) {
-                        Log.d(TAG, "Content stream read fallback note: ${e.message}")
-                    }
+                    } catch (_: Throwable) {}
                 }
 
-                val bufferSize = if (finalBitmap != null) finalBitmap.byteCount else (bundle.getByteArray("jpeg_buffer")?.size ?: 0)
-
-                if (!isProviderAvailable) {
-                    isProviderAvailable = true
-                    consecutiveErrors = 0
-                    Log.i(TAG, "[FRAME_BRIDGE] bridge connected (provider available=$providerRunning, streaming=$isStreaming)")
-                }
-
-                if (finalBitmap == null) {
-                    Log.w(TAG, "[FRAME_FETCH_EMPTY] Target process received NO valid bitmap from provider (providerRunning=$providerRunning, health=$healthState, isStreaming=$isStreaming). Falling back to standby test pattern.")
-                }
+                isProviderAvailable = true
+                consecutiveErrors = 0
 
                 if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                     lastIpcLogMs = now
-                    Log.i(TAG, "[FRAME_IPC_RETURNED] id=$frameId")
-                    Log.i(TAG, "[IPC_FRAME_REQUEST] target=$attachedPackageName requested frame via ContentResolver.call")
-                    Log.i(TAG, "[IPC_FRAME_TRANSPORT] transport=$transportUsed frameId=$frameId dimensions=${width}x${height}")
-                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=$frameId dimensions=${width}x${height} format=${bundle.getString("format", "RGBA_8888")}")
-                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${finalBitmap != null} valid=${finalBitmap?.let { !it.isRecycled } ?: false}")
-                    Log.i(TAG, "[IPC_FRAME_TIMESTAMP] timestampUs=${timestampUs}us health=$healthState")
-                    Log.i(TAG, "[IPC_FRAME_COUNTER] bridgeFrameId=$frameId targetPackage=$attachedPackageName")
+                    Log.i(TAG, "[IPC_TIER_CONTENT_PROVIDER] frameId=$frameId hasBitmap=${finalBitmap != null} target=$attachedPackageName")
                 }
 
                 RemoteFrameResult(
@@ -242,7 +266,7 @@ object ZestoRemoteFrameSource {
                     width = width,
                     height = height,
                     healthState = healthState ?: "NO_FRAME",
-                    isStreaming = isStreaming
+                    isStreaming = isStreaming || finalBitmap != null
                 )
             } else {
                 handleProviderUnavailable(now)
@@ -261,21 +285,26 @@ object ZestoRemoteFrameSource {
         nextProviderCheckMs = nowMs + backoffMs
 
         if (consecutiveErrors == 1 || consecutiveErrors % 15 == 0) {
-            Log.i(TAG, "[FRAME_PROVIDER] provider running=false (consecutiveErrors=$consecutiveErrors, retryIn=${backoffMs}ms, error=${errorMsg ?: "null response"})")
+            Log.d(TAG, "[FRAME_PROVIDER] provider checking (errors=$consecutiveErrors, retryIn=${backoffMs}ms, error=${errorMsg ?: "null response"})")
         }
     }
 
     /**
-     * Reports a diagnostic milestone from the target process back to Zesto.
+     * Reports a diagnostic milestone from the target process back to Zesto across all available IPC tiers.
      */
     fun reportMilestone(stage: String, message: String) {
         val pkg = attachedPackageName
         Log.i(TAG, "[$stage] $message (target: $pkg)")
 
-        // Local in-memory update
+        // Tier 1: Local in-memory
         ZestoFrameBridge.reportExternalMilestone(stage, pkg, message)
 
-        // Cross-process notification via ContentProvider
+        // Tier 2: Unix domain socket
+        try {
+            ZestoIpcSocketClient.reportMilestone(stage, pkg, message)
+        } catch (_: Throwable) {}
+
+        // Tier 4: ContentProvider
         val context = getTargetContext() ?: return
         try {
             val extras = Bundle().apply {
@@ -284,8 +313,7 @@ object ZestoRemoteFrameSource {
                 putString("stage", stage)
             }
             context.contentResolver.call(PROVIDER_URI, "reportMilestone", stage, extras)
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     /**

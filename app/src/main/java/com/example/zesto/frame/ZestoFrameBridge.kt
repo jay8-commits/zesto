@@ -493,6 +493,31 @@ object ZestoFrameBridge {
         _latestFrame.value =
             frame
 
+        // Broadcast to high-performance Unix Domain Socket Server and Shared Memory Bridge
+        try {
+            com.example.zesto.ipc.ZestoIpcSocketServer.updateFrame(
+                frameId = id,
+                timestampUs = timestampUs,
+                width = width,
+                height = height,
+                bitmap = bitmap,
+                rawBuffer = buffer,
+                sourceMode = sourceMode,
+                healthState = getFrameHealthState(),
+                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null
+            )
+            com.example.zesto.ipc.ZestoSharedMemoryBridge.writeFrame(
+                frameId = id,
+                timestampUs = timestampUs,
+                width = width,
+                height = height,
+                bitmap = bitmap,
+                rawBytes = buffer,
+                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
+                healthState = getFrameHealthState().name
+            )
+        } catch (_: Throwable) {}
+
         /*
          * A real frame means the bridge is alive.
          */

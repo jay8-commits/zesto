@@ -244,6 +244,11 @@ class ZestoStreamingService : Service() {
         framePipeline.start()
 
         ZestoFrameBridge.setProviderRunning(true)
+        ZestoFrameBridge.setBridgeReady(true)
+        try {
+            com.example.zesto.ipc.ZestoIpcSocketServer.startServer()
+            com.example.zesto.ipc.ZestoSharedMemoryBridge.initServer()
+        } catch (_: Throwable) {}
 
         observePlayerState()
     }

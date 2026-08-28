@@ -1,8 +1,8 @@
+```kotlin
 package com.example.zesto.stream
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
 import android.util.Log
 import android.view.Surface
 import androidx.annotation.OptIn
@@ -20,6 +20,7 @@ import com.example.zesto.decoder.DecoderStats
 import com.example.zesto.frame.FrameSourceMode
 import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
+import com.example.zesto.frame.ZestoFrameBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,10 +39,11 @@ import java.util.concurrent.atomic.AtomicLong
  * - RTSP playback through Media3 ExoPlayer
  * - RTP-over-TCP / RTP-over-UDP selection
  * - Hardware decoder selection with fallback
- * - Real rendered-frame and dropped-frame telemetry via SurfaceTexture frame listeners
- * - Real Media3 playback error reporting
- * - Automatic reconnect with exponential backoff
- * - Real-time decoded VideoFrame delivery to downstream FramePipeline
+ * - Offscreen SurfaceTexture rendering
+ * - Real decoded Bitmap delivery
+ * - RTSP frame delivery into ZestoFrameBridge
+ * - Real rendered/dropped frame telemetry
+ * - Automatic reconnect
  */
 @OptIn(UnstableApi::class)
 class RTSPPlayerEngine(
@@ -49,12 +51,19 @@ class RTSPPlayerEngine(
     private val scope: CoroutineScope =
         CoroutineScope(Dispatchers.Main.immediate)
 ) {
-    var diagnosticsManager: com.example.zesto.diagnostics.DiagnosticsManager? = null
+
+    var diagnosticsManager:
+        com.example.zesto.diagnostics.DiagnosticsManager? = null
 
     private var exoPlayer: ExoPlayer? = null
-    private var offscreenFrameExtractor: OffscreenFrameExtractor? = null
+
+    private var offscreenFrameExtractor:
+        OffscreenFrameExtractor? = null
+
     private var internalSurface: Surface? = null
-    private var frameListener: ((VideoFrame) -> Unit)? = null
+
+    private var frameListener:
+        ((VideoFrame) -> Unit)? = null
 
     val player: ExoPlayer?
         get() = exoPlayer
@@ -122,59 +131,185 @@ class RTSPPlayerEngine(
         initializePlayer()
     }
 
-    fun setFrameListener(listener: ((VideoFrame) -> Unit)?) {
-        this.frameListener = listener
+    fun setFrameListener(
+        listener: ((VideoFrame) -> Unit)?
+    ) {
+        frameListener = listener
     }
 
     /**
-     * Authoritative frame delivery from hardware/software decoder into the frame pipeline.
+     * Authoritative decoded-frame delivery.
+     *
+     * IMPORTANT:
+     *
+     * The decoded RTSP Bitmap is posted directly into
+     * ZestoFrameBridge so the injected target can consume
+     * the actual RTSP frame instead of the local test pattern.
      */
     fun deliverDecodedFrame(
         bitmap: Bitmap,
         width: Int,
         height: Int,
-        timestampUs: Long = System.nanoTime() / 1000L
+        timestampUs: Long =
+            System.nanoTime() / 1000L
     ) {
-        val isValid = !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0
+
+        val isValid =
+            !bitmap.isRecycled &&
+            bitmap.width > 0 &&
+            bitmap.height > 0 &&
+            width > 0 &&
+            height > 0
+
         if (!isValid) {
-            Log.w(TAG, "[ZESTO_FRAME_INVALID] Frame contains invalid bitmap (recycled=${bitmap.isRecycled}, ${bitmap.width}x${bitmap.height})")
+            Log.w(
+                TAG,
+                "[ZESTO_FRAME_INVALID] " +
+                    "Invalid RTSP bitmap: " +
+                    "recycled=${bitmap.isRecycled}, " +
+                    "bitmap=${bitmap.width}x${bitmap.height}, " +
+                    "frame=${width}x${height}"
+            )
             return
         }
 
-        val count = renderedFramesCount.incrementAndGet()
-        framesSinceLastFps++
-        if (width > 0) currentVideoWidth = width
-        if (height > 0) currentVideoHeight = height
+        val count =
+            renderedFramesCount.incrementAndGet()
 
-        if (count == 1L || count % 60L == 0L) {
-            Log.i(TAG, "[RTSP_FRAME_DECODED] id=$count width=$width height=$height timestamp=$timestampUs BITMAP_VALID=true")
-            Log.i(TAG, "[RTSP_FRAME_PIXELS_READY] id=$count width=$width height=$height BITMAP_WIDTH=$width BITMAP_HEIGHT=$height FRAME_ID=$count BITMAP_VALID=true")
-            diagnosticsManager?.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED)
+        framesSinceLastFps++
+
+        currentVideoWidth = width
+        currentVideoHeight = height
+
+        if (
+            count == 1L ||
+            count % 60L == 0L
+        ) {
+
+            Log.i(
+                TAG,
+                "[RTSP_FRAME_DECODED] " +
+                    "id=$count " +
+                    "width=$width " +
+                    "height=$height " +
+                    "timestampUs=$timestampUs " +
+                    "BITMAP_VALID=true"
+            )
+
+            Log.i(
+                TAG,
+                "[RTSP_FRAME_PIXELS_READY] " +
+                    "id=$count " +
+                    "width=$width " +
+                    "height=$height " +
+                    "BITMAP_WIDTH=${bitmap.width} " +
+                    "BITMAP_HEIGHT=${bitmap.height}"
+            )
+
+            diagnosticsManager?.recordBoundaryStage(
+                com.example.zesto.diagnostics.BoundaryDiagnosticStage
+                    .VIDEO_FRAME_DECODED
+            )
         }
 
-        val frame = VideoFrame(
-            frameNumber = count,
-            timestampUs = timestampUs,
-            width = width,
-            height = height,
-            pixelFormat = PixelFormat.RGBA_8888,
-            bitmap = bitmap,
-            sourceMode = FrameSourceMode.RTSP
-        )
+        /*
+         * ============================================================
+         * CRITICAL RTSP -> FRAME BRIDGE CONNECTION
+         * ============================================================
+         *
+         * The RTSP frame is now posted directly into the shared
+         * ZestoFrameBridge.
+         *
+         * This allows the injected target application to consume
+         * the actual RTSP Bitmap.
+         */
+        try {
 
-        if (count == 1L || count % 60L == 0L) {
-            Log.i(TAG, "[FRAME_PIPELINE_DISPATCH] id=$count width=$width height=$height timestamp=$timestampUs")
+            /*
+             * Explicitly mark this frame as RTSP.
+             *
+             * This is important because the bridge also supports
+             * TEST_PATTERN frames.
+             */
+            ZestoFrameBridge.setSourceMode(
+                FrameSourceMode.RTSP
+            )
+
+            ZestoFrameBridge.postFrame(
+                width = width,
+                height = height,
+                format = PixelFormat.RGBA_8888,
+                bitmap = bitmap,
+                timestampUs = timestampUs,
+                sourceMode = FrameSourceMode.RTSP,
+                externalFrameId = count
+            )
+
+            if (
+                count == 1L ||
+                count % 60L == 0L
+            ) {
+
+                Log.i(
+                    TAG,
+                    "[RTSP_TO_FRAME_BRIDGE] " +
+                        "id=$count " +
+                        "RTSP bitmap posted to ZestoFrameBridge " +
+                        "${width}x${height}"
+                )
+            }
+
+        } catch (e: Throwable) {
+
+            Log.e(
+                TAG,
+                "[RTSP_TO_FRAME_BRIDGE_FAILED] " +
+                    "Failed to post RTSP frame to ZestoFrameBridge: " +
+                    e.message,
+                e
+            )
+        }
+
+        /*
+         * Preserve the existing downstream VideoFrame pipeline.
+         */
+        val frame =
+            VideoFrame(
+                frameNumber = count,
+                timestampUs = timestampUs,
+                width = width,
+                height = height,
+                pixelFormat = PixelFormat.RGBA_8888,
+                bitmap = bitmap,
+                sourceMode = FrameSourceMode.RTSP
+            )
+
+        if (
+            count == 1L ||
+            count % 60L == 0L
+        ) {
+
+            Log.i(
+                TAG,
+                "[FRAME_PIPELINE_DISPATCH] " +
+                    "id=$count " +
+                    "width=$width " +
+                    "height=$height " +
+                    "timestamp=$timestampUs"
+            )
         }
 
         frameListener?.invoke(frame)
     }
 
     private fun initializePlayer() {
+
         if (exoPlayer != null) {
             return
         }
 
         try {
+
             val renderersFactory =
                 DefaultRenderersFactory(context)
                     .setEnableDecoderFallback(true)
@@ -189,64 +324,194 @@ class RTSPPlayerEngine(
                     renderersFactory
                 ).build()
 
-            // Attach offscreen GL Frame Extractor to receive and convert hardware-decoded frames directly
+            /*
+             * Create offscreen GL extractor.
+             */
             try {
-                val initialW = if (currentVideoWidth > 0) currentVideoWidth else 1280
-                val initialH = if (currentVideoHeight > 0) currentVideoHeight else 720
-                val extractor = OffscreenFrameExtractor(initialW, initialH) { bmp, w, h, ts ->
-                    deliverDecodedFrame(bmp, w, h, ts)
-                }
-                offscreenFrameExtractor = extractor
-                val surf = extractor.surface
-                internalSurface = surf
+
+                val initialW =
+                    if (currentVideoWidth > 0) {
+                        currentVideoWidth
+                    } else {
+                        1280
+                    }
+
+                val initialH =
+                    if (currentVideoHeight > 0) {
+                        currentVideoHeight
+                    } else {
+                        720
+                    }
+
+                val extractor =
+                    OffscreenFrameExtractor(
+                        initialW,
+                        initialH
+                    ) { bmp, w, h, ts ->
+
+                        /*
+                         * Hardware-decoded RTSP frame arrives here.
+                         */
+                        deliverDecodedFrame(
+                            bmp,
+                            w,
+                            h,
+                            ts
+                        )
+                    }
+
+                offscreenFrameExtractor =
+                    extractor
+
+                val surf =
+                    extractor.surface
+
+                internalSurface =
+                    surf
+
                 if (surf != null) {
-                    playerInstance.setVideoSurface(surf)
-                    Log.i(TAG, "[DECODER_SURFACE_ATTACHED] Offscreen hardware decoder surface attached (${initialW}x${initialH})")
+
+                    playerInstance.setVideoSurface(
+                        surf
+                    )
+
+                    Log.i(
+                        TAG,
+                        "[DECODER_SURFACE_ATTACHED] " +
+                            "Offscreen hardware decoder surface attached " +
+                            "(${initialW}x${initialH})"
+                    )
                 }
+
             } catch (e: Throwable) {
-                Log.w(TAG, "OffscreenFrameExtractor init fallback: ${e.message}")
+
+                Log.w(
+                    TAG,
+                    "OffscreenFrameExtractor init fallback: " +
+                        e.message,
+                    e
+                )
             }
 
             playerInstance.addListener(
                 object : Player.Listener {
 
-                    override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                        for (group in tracks.groups) {
-                            if (group.type == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
-                                for (i in 0 until group.length) {
-                                    if (group.isTrackSelected(i)) {
-                                        val format = group.getTrackFormat(i)
-                                        val mime = format.sampleMimeType ?: "video/avc"
-                                        val codec = format.codecs ?: "unknown"
-                                        val w = format.width
-                                        val h = format.height
-                                        val fps = format.frameRate
-                                        val bitrate = format.bitrate
+                    override fun onTracksChanged(
+                        tracks: androidx.media3.common.Tracks
+                    ) {
 
-                                        if (w > 0) currentVideoWidth = w
-                                        if (h > 0) currentVideoHeight = h
-                                        if (w > 0 && h > 0) {
-                                            offscreenFrameExtractor?.updateDimensions(w, h)
+                        for (group in tracks.groups) {
+
+                            if (
+                                group.type ==
+                                androidx.media3.common.C
+                                    .TRACK_TYPE_VIDEO
+                            ) {
+
+                                for (
+                                    i in 0 until group.length
+                                ) {
+
+                                    if (
+                                        group.isTrackSelected(i)
+                                    ) {
+
+                                        val format =
+                                            group.getTrackFormat(i)
+
+                                        val mime =
+                                            format.sampleMimeType
+                                                ?: "video/avc"
+
+                                        val codec =
+                                            format.codecs
+                                                ?: "unknown"
+
+                                        val w =
+                                            format.width
+
+                                        val h =
+                                            format.height
+
+                                        val fps =
+                                            format.frameRate
+
+                                        val bitrate =
+                                            format.bitrate
+
+                                        if (w > 0) {
+                                            currentVideoWidth = w
                                         }
 
-                                        diagnosticsManager?.logger?.info(
-                                            com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                            "[VIDEO_TRACK_DETECTED] SDP Video Track Detected: MIME=$mime, Codec=$codec, Resolution=${w}x${h}@${fps}fps, Bitrate=$bitrate bps"
-                                        )
-                                        diagnosticsManager?.recordBoundaryStage(
-                                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_TRACK_DETECTED
-                                        )
+                                        if (h > 0) {
+                                            currentVideoHeight = h
+                                        }
 
-                                        _decoderState.value = DecoderState.Configured(
-                                            mimeType = mime,
-                                            width = if (w > 0) w else 1280,
-                                            height = if (h > 0) h else 720
-                                        )
+                                        if (
+                                            w > 0 &&
+                                            h > 0
+                                        ) {
+
+                                            offscreenFrameExtractor
+                                                ?.updateDimensions(
+                                                    w,
+                                                    h
+                                                )
+                                        }
+
+                                        diagnosticsManager
+                                            ?.logger
+                                            ?.info(
+                                                com.example.zesto.diagnostics
+                                                    .Subsystem.TRANSPORT,
+                                                "[VIDEO_TRACK_DETECTED] " +
+                                                    "SDP Video Track Detected: " +
+                                                    "MIME=$mime, " +
+                                                    "Codec=$codec, " +
+                                                    "Resolution=${w}x${h}@${fps}fps, " +
+                                                    "Bitrate=$bitrate bps"
+                                            )
+
+                                        diagnosticsManager
+                                            ?.recordBoundaryStage(
+                                                com.example.zesto.diagnostics
+                                                    .BoundaryDiagnosticStage
+                                                    .VIDEO_TRACK_DETECTED
+                                            )
+
+                                        _decoderState.value =
+                                            DecoderState.Configured(
+                                                mimeType = mime,
+                                                width =
+                                                    if (w > 0) {
+                                                        w
+                                                    } else {
+                                                        1280
+                                                    },
+                                                height =
+                                                    if (h > 0) {
+                                                        h
+                                                    } else {
+                                                        720
+                                                    }
+                                            )
+
                                         _decoderStats.update {
                                             it.copy(
-                                                width = if (w > 0) w else it.width,
-                                                height = if (h > 0) h else it.height,
-                                                pixelFormat = mime
+                                                width =
+                                                    if (w > 0) {
+                                                        w
+                                                    } else {
+                                                        it.width
+                                                    },
+                                                height =
+                                                    if (h > 0) {
+                                                        h
+                                                    } else {
+                                                        it.height
+                                                    },
+                                                pixelFormat =
+                                                    mime
                                             )
                                         }
                                     }
@@ -258,83 +523,143 @@ class RTSPPlayerEngine(
                     override fun onPlaybackStateChanged(
                         playbackState: Int
                     ) {
+
                         when (playbackState) {
 
                             Player.STATE_IDLE -> {
+
                                 if (
                                     _streamState.value
                                         is StreamState.Connected
                                 ) {
+
                                     _streamState.value =
                                         StreamState.Disconnected
                                 }
-                                diagnosticsManager?.removeBoundaryStage(
-                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                                )
+
+                                diagnosticsManager
+                                    ?.removeBoundaryStage(
+                                        com.example.zesto.diagnostics
+                                            .BoundaryDiagnosticStage
+                                            .RTSP_CONNECTED
+                                    )
                             }
 
                             Player.STATE_BUFFERING -> {
+
                                 if (
                                     _streamState.value
                                         !is StreamState.Reconnecting
                                 ) {
+
                                     _streamState.value =
                                         StreamState.Connecting
                                 }
 
-                                diagnosticsManager?.logger?.info(
-                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                    "RTSP DESCRIBE & SETUP complete. Buffering RTP packet stream..."
-                                )
+                                diagnosticsManager
+                                    ?.logger
+                                    ?.info(
+                                        com.example.zesto.diagnostics
+                                            .Subsystem.TRANSPORT,
+                                        "RTSP DESCRIBE & SETUP complete. " +
+                                            "Buffering RTP packet stream..."
+                                    )
 
                                 _decoderState.value =
                                     DecoderState.Configured(
                                         "video/avc",
-                                        if (currentVideoWidth > 0) currentVideoWidth else 1280,
-                                        if (currentVideoHeight > 0) currentVideoHeight else 720
+                                        if (
+                                            currentVideoWidth > 0
+                                        ) {
+                                            currentVideoWidth
+                                        } else {
+                                            1280
+                                        },
+                                        if (
+                                            currentVideoHeight > 0
+                                        ) {
+                                            currentVideoHeight
+                                        } else {
+                                            720
+                                        }
                                     )
                             }
 
                             Player.STATE_READY -> {
-                                val isPlaying = exoPlayer?.isPlaying == true
-                                val url = activeConfig?.url.orEmpty()
+
+                                val isPlaying =
+                                    exoPlayer?.isPlaying == true
+
+                                val url =
+                                    activeConfig?.url.orEmpty()
 
                                 if (isPlaying) {
-                                    _streamState.value = StreamState.Connected(url)
-                                    _decoderState.value = DecoderState.Running
+
+                                    _streamState.value =
+                                        StreamState.Connected(
+                                            url
+                                        )
+
+                                    _decoderState.value =
+                                        DecoderState.Running
+
                                     reconnectAttempts = 0
 
-                                    diagnosticsManager?.logger?.info(
-                                        com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                        "[RTSP_CONNECTED] RTSP connection established and RTP media stream active: $url"
-                                    )
-                                    diagnosticsManager?.recordBoundaryStage(
-                                        com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                                    )
+                                    diagnosticsManager
+                                        ?.logger
+                                        ?.info(
+                                            com.example.zesto.diagnostics
+                                                .Subsystem.TRANSPORT,
+                                            "[RTSP_CONNECTED] " +
+                                                "RTSP connection established " +
+                                                "and RTP media stream active: $url"
+                                        )
+
+                                    diagnosticsManager
+                                        ?.recordBoundaryStage(
+                                            com.example.zesto.diagnostics
+                                                .BoundaryDiagnosticStage
+                                                .RTSP_CONNECTED
+                                        )
+
                                 } else {
-                                    _streamState.value = StreamState.Connecting
-                                    diagnosticsManager?.logger?.info(
-                                        com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                        "RTSP player ready, awaiting media flow..."
-                                    )
+
+                                    _streamState.value =
+                                        StreamState.Connecting
+
+                                    diagnosticsManager
+                                        ?.logger
+                                        ?.info(
+                                            com.example.zesto.diagnostics
+                                                .Subsystem.TRANSPORT,
+                                            "RTSP player ready, " +
+                                                "awaiting media flow..."
+                                        )
                                 }
                             }
 
                             Player.STATE_ENDED -> {
+
                                 _streamState.value =
                                     StreamState.Disconnected
 
                                 _decoderState.value =
                                     DecoderState.Stopped
 
-                                diagnosticsManager?.removeBoundaryStage(
-                                    com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                                )
+                                diagnosticsManager
+                                    ?.removeBoundaryStage(
+                                        com.example.zesto.diagnostics
+                                            .BoundaryDiagnosticStage
+                                            .RTSP_CONNECTED
+                                    )
 
-                                diagnosticsManager?.logger?.info(
-                                    com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                    "RTSP stream ended by remote source"
-                                )
+                                diagnosticsManager
+                                    ?.logger
+                                    ?.info(
+                                        com.example.zesto.diagnostics
+                                            .Subsystem.TRANSPORT,
+                                        "RTSP stream ended by remote source"
+                                    )
                             }
                         }
                     }
@@ -342,33 +667,63 @@ class RTSPPlayerEngine(
                     override fun onIsPlayingChanged(
                         isPlaying: Boolean
                     ) {
+
                         if (isPlaying) {
-                            val url = activeConfig?.url.orEmpty()
-                            _streamState.value = StreamState.Connected(url)
-                            _decoderState.value = DecoderState.Running
+
+                            val url =
+                                activeConfig?.url.orEmpty()
+
+                            _streamState.value =
+                                StreamState.Connected(url)
+
+                            _decoderState.value =
+                                DecoderState.Running
+
                             reconnectAttempts = 0
 
-                            diagnosticsManager?.logger?.info(
-                                com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                                "[RTSP_CONNECTED] RTSP connection established and active RTP media playback underway: $url"
-                            )
-                            diagnosticsManager?.recordBoundaryStage(
-                                com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                            )
-                        } else if (exoPlayer?.playbackState != Player.STATE_BUFFERING && exoPlayer?.playbackState != Player.STATE_READY) {
-                            diagnosticsManager?.removeBoundaryStage(
-                                com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                            )
+                            diagnosticsManager
+                                ?.logger
+                                ?.info(
+                                    com.example.zesto.diagnostics
+                                        .Subsystem.TRANSPORT,
+                                    "[RTSP_CONNECTED] " +
+                                        "RTSP connection established " +
+                                        "and active RTP media playback " +
+                                        "underway: $url"
+                                )
+
+                            diagnosticsManager
+                                ?.recordBoundaryStage(
+                                    com.example.zesto.diagnostics
+                                        .BoundaryDiagnosticStage
+                                        .RTSP_CONNECTED
+                                )
+
+                        } else if (
+                            exoPlayer?.playbackState !=
+                                Player.STATE_BUFFERING &&
+                            exoPlayer?.playbackState !=
+                                Player.STATE_READY
+                        ) {
+
+                            diagnosticsManager
+                                ?.removeBoundaryStage(
+                                    com.example.zesto.diagnostics
+                                        .BoundaryDiagnosticStage
+                                        .RTSP_CONNECTED
+                                )
                         }
                     }
 
                     override fun onVideoSizeChanged(
                         videoSize: VideoSize
                     ) {
+
                         if (
                             videoSize.width > 0 &&
                             videoSize.height > 0
                         ) {
+
                             currentVideoWidth =
                                 videoSize.width
 
@@ -376,8 +731,15 @@ class RTSPPlayerEngine(
                                 videoSize.height
 
                             try {
-                                offscreenFrameExtractor?.updateDimensions(videoSize.width, videoSize.height)
-                            } catch (_: Exception) {}
+
+                                offscreenFrameExtractor
+                                    ?.updateDimensions(
+                                        videoSize.width,
+                                        videoSize.height
+                                    )
+
+                            } catch (_: Exception) {
+                            }
 
                             _decoderStats.update {
                                 it.copy(
@@ -388,40 +750,79 @@ class RTSPPlayerEngine(
                                 )
                             }
 
-                            diagnosticsManager?.logger?.info(
-                                com.example.zesto.diagnostics.Subsystem.DECODER,
-                                "Video dimensions updated from stream: ${videoSize.width}x${videoSize.height}"
-                            )
+                            diagnosticsManager
+                                ?.logger
+                                ?.info(
+                                    com.example.zesto.diagnostics
+                                        .Subsystem.DECODER,
+                                    "Video dimensions updated " +
+                                        "from stream: " +
+                                        "${videoSize.width}x" +
+                                        "${videoSize.height}"
+                                )
                         }
                     }
 
                     override fun onRenderedFirstFrame() {
+
                         _decoderState.value =
                             DecoderState.Running
 
-                        val width = if (currentVideoWidth > 0) currentVideoWidth else 1280
-                        val height = if (currentVideoHeight > 0) currentVideoHeight else 720
-                        val timestampUs = System.nanoTime() / 1000L
+                        val width =
+                            if (currentVideoWidth > 0) {
+                                currentVideoWidth
+                            } else {
+                                1280
+                            }
 
-                        diagnosticsManager?.logger?.info(
-                            com.example.zesto.diagnostics.Subsystem.DECODER,
-                            "[VIDEO_FRAME_DECODED] First video frame decoded to hardware surface: codec=$decoderName, resolution=${width}x${height}, timestampUs=$timestampUs"
-                        )
-                        diagnosticsManager?.recordBoundaryStage(
-                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.VIDEO_FRAME_DECODED
-                        )
+                        val height =
+                            if (currentVideoHeight > 0) {
+                                currentVideoHeight
+                            } else {
+                                720
+                            }
+
+                        val timestampUs =
+                            System.nanoTime() / 1000L
+
+                        diagnosticsManager
+                            ?.logger
+                            ?.info(
+                                com.example.zesto.diagnostics
+                                    .Subsystem.DECODER,
+                                "[VIDEO_FRAME_DECODED] " +
+                                    "First video frame decoded to " +
+                                    "hardware surface: " +
+                                    "codec=$decoderName, " +
+                                    "resolution=${width}x${height}, " +
+                                    "timestampUs=$timestampUs"
+                            )
+
+                        diagnosticsManager
+                            ?.recordBoundaryStage(
+                                com.example.zesto.diagnostics
+                                    .BoundaryDiagnosticStage
+                                    .VIDEO_FRAME_DECODED
+                            )
                     }
 
                     override fun onPlayerError(
                         error: PlaybackException
                     ) {
+
                         decodeErrorCount.incrementAndGet()
-                        diagnosticsManager?.removeBoundaryStage(
-                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-                        )
+
+                        diagnosticsManager
+                            ?.removeBoundaryStage(
+                                com.example.zesto.diagnostics
+                                    .BoundaryDiagnosticStage
+                                    .RTSP_CONNECTED
+                            )
 
                         val message =
-                            buildPlaybackErrorMessage(error)
+                            buildPlaybackErrorMessage(
+                                error
+                            )
 
                         _decoderStats.update {
                             it.copy(
@@ -430,11 +831,16 @@ class RTSPPlayerEngine(
                             )
                         }
 
-                        diagnosticsManager?.logger?.error(
-                            com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                            "RTSP Playback Error [${error.errorCodeName} / ${error.errorCode}]: $message",
-                            error.stackTraceToString()
-                        )
+                        diagnosticsManager
+                            ?.logger
+                            ?.error(
+                                com.example.zesto.diagnostics
+                                    .Subsystem.TRANSPORT,
+                                "RTSP Playback Error " +
+                                    "[${error.errorCodeName} / " +
+                                    "${error.errorCode}]: $message",
+                                error.stackTraceToString()
+                            )
 
                         handlePlaybackFailure(
                             message,
@@ -448,10 +854,12 @@ class RTSPPlayerEngine(
                 object : AnalyticsListener {
 
                     override fun onDroppedVideoFrames(
-                        eventTime: AnalyticsListener.EventTime,
+                        eventTime:
+                            AnalyticsListener.EventTime,
                         droppedFrames: Int,
                         elapsedMs: Long
                     ) {
+
                         if (droppedFrames <= 0) {
                             return
                         }
@@ -469,11 +877,13 @@ class RTSPPlayerEngine(
                     }
 
                     override fun onVideoDecoderInitialized(
-                        eventTime: AnalyticsListener.EventTime,
+                        eventTime:
+                            AnalyticsListener.EventTime,
                         decoderNameParam: String,
                         initializedTimestampMs: Long,
                         initializationDurationMs: Long
                     ) {
+
                         decoderName =
                             decoderNameParam
 
@@ -484,21 +894,34 @@ class RTSPPlayerEngine(
                             )
                         }
 
-                        diagnosticsManager?.logger?.info(
-                            com.example.zesto.diagnostics.Subsystem.DECODER,
-                            "[DECODER_INITIALIZED] Video decoder initialized: $decoderNameParam (took ${initializationDurationMs}ms)"
-                        )
-                        diagnosticsManager?.recordBoundaryStage(
-                            com.example.zesto.diagnostics.BoundaryDiagnosticStage.DECODER_INITIALIZED
-                        )
+                        diagnosticsManager
+                            ?.logger
+                            ?.info(
+                                com.example.zesto.diagnostics
+                                    .Subsystem.DECODER,
+                                "[DECODER_INITIALIZED] " +
+                                    "Video decoder initialized: " +
+                                    "$decoderNameParam " +
+                                    "(took ${initializationDurationMs}ms)"
+                            )
+
+                        diagnosticsManager
+                            ?.recordBoundaryStage(
+                                com.example.zesto.diagnostics
+                                    .BoundaryDiagnosticStage
+                                    .DECODER_INITIALIZED
+                            )
                     }
 
                     override fun onVideoFrameProcessingOffset(
-                        eventTime: AnalyticsListener.EventTime,
+                        eventTime:
+                            AnalyticsListener.EventTime,
                         totalProcessingOffsetUs: Long,
                         frameCount: Int
                     ) {
-                        // Diagnostic telemetry only; do not fabricate frames here
+                        /*
+                         * Diagnostic telemetry only.
+                         */
                     }
                 }
             )
@@ -519,9 +942,12 @@ class RTSPPlayerEngine(
     fun startStream(
         config: StreamConfig
     ) {
-        activeConfig = config
 
-        diagnosticsManager?.resetPipelineBoundaries()
+        activeConfig =
+            config
+
+        diagnosticsManager
+            ?.resetPipelineBoundaries()
 
         reconnectJob?.cancel()
         reconnectJob = null
@@ -533,18 +959,28 @@ class RTSPPlayerEngine(
         decodeErrorCount.set(0L)
 
         framesSinceLastFps = 0L
+
         lastFpsTimestamp =
             System.currentTimeMillis()
 
         currentVideoWidth = 0
         currentVideoHeight = 0
 
+        /*
+         * Make sure the bridge starts in RTSP mode.
+         */
+        ZestoFrameBridge.setSourceMode(
+            FrameSourceMode.RTSP
+        )
+
         _decoderStats.value =
             DecoderStats()
 
         initializePlayer()
 
-        connectInternal(config)
+        connectInternal(
+            config
+        )
 
         startMetricsMonitor()
     }
@@ -552,19 +988,24 @@ class RTSPPlayerEngine(
     private fun connectInternal(
         config: StreamConfig
     ) {
+
         val playerInstance =
-            exoPlayer ?: run {
-                handlePlaybackFailure(
-                    "ExoPlayer is not initialized",
-                    null
-                )
-                return
-            }
+            exoPlayer
+                ?: run {
+
+                    handlePlaybackFailure(
+                        "ExoPlayer is not initialized",
+                        null
+                    )
+
+                    return
+                }
 
         _streamState.value =
             StreamState.Connecting
 
         try {
+
             playerInstance.stop()
             playerInstance.clearMediaItems()
 
@@ -573,26 +1014,42 @@ class RTSPPlayerEngine(
                     TransportProtocol.RTSP_TCP
 
             val transportModeStr =
-                if (forceTcp) "RTP/AVP/TCP (Interleaved)" else "RTP/AVP/UDP (Unicast)"
+                if (forceTcp) {
+                    "RTP/AVP/TCP (Interleaved)"
+                } else {
+                    "RTP/AVP/UDP (Unicast)"
+                }
 
-            diagnosticsManager?.logger?.info(
-                com.example.zesto.diagnostics.Subsystem.TRANSPORT,
-                "Connecting to RTSP URL: ${config.url} [Transport: $transportModeStr, Timeout: ${config.connectionTimeoutMs}ms]"
-            )
+            diagnosticsManager
+                ?.logger
+                ?.info(
+                    com.example.zesto.diagnostics
+                        .Subsystem.TRANSPORT,
+                    "Connecting to RTSP URL: " +
+                        "${config.url} " +
+                        "[Transport: $transportModeStr, " +
+                        "Timeout: ${config.connectionTimeoutMs}ms]"
+                )
 
             val mediaItem =
-                MediaItem.fromUri(config.url)
+                MediaItem.fromUri(
+                    config.url
+                )
 
             val mediaSource =
                 RtspMediaSource.Factory()
-                    .setForceUseRtpTcp(forceTcp)
+                    .setForceUseRtpTcp(
+                        forceTcp
+                    )
                     .setTimeoutMs(
                         config.connectionTimeoutMs
                     )
                     .setUserAgent(
                         "Zesto/1.0 (Android Systems Pipeline)"
                     )
-                    .createMediaSource(mediaItem)
+                    .createMediaSource(
+                        mediaItem
+                    )
 
             playerInstance.setMediaSource(
                 mediaSource
@@ -606,7 +1063,8 @@ class RTSPPlayerEngine(
         } catch (e: Exception) {
 
             handlePlaybackFailure(
-                "Failed to connect to RTSP source: ${e.message}",
+                "Failed to connect to RTSP source: " +
+                    e.message,
                 e
             )
         }
@@ -616,6 +1074,7 @@ class RTSPPlayerEngine(
         reason: String,
         cause: Throwable?
     ) {
+
         val config =
             activeConfig
 
@@ -649,7 +1108,9 @@ class RTSPPlayerEngine(
                 (
                     config.reconnectDelayMs *
                         backoffMultiplier
-                    ).coerceAtMost(15_000L)
+                    ).coerceAtMost(
+                        15_000L
+                    )
 
             reconnectJob?.cancel()
 
@@ -663,6 +1124,7 @@ class RTSPPlayerEngine(
                     if (
                         activeConfig === config
                     ) {
+
                         connectInternal(
                             config
                         )
@@ -693,26 +1155,64 @@ class RTSPPlayerEngine(
         val causes =
             mutableListOf<String>()
 
-        var current: Throwable? =
-            error
+        var current:
+            Throwable? = error
 
-        var isAuthError = false
-        var isHostError = false
+        var isAuthError =
+            false
+
+        var isHostError =
+            false
 
         while (current != null) {
-            val msg = current.message.orEmpty()
-            val clsName = current::class.java.simpleName
-            if (msg.contains("401") || msg.contains("Unauthorized", ignoreCase = true) || clsName.contains("RtspPlaybackException")) {
-                if (msg.contains("401") || msg.contains("Unauthorized", ignoreCase = true)) {
-                    isAuthError = true
+
+            val msg =
+                current.message.orEmpty()
+
+            val clsName =
+                current::class.java.simpleName
+
+            if (
+                msg.contains("401") ||
+                msg.contains(
+                    "Unauthorized",
+                    ignoreCase = true
+                ) ||
+                clsName.contains(
+                    "RtspPlaybackException"
+                )
+            ) {
+
+                if (
+                    msg.contains("401") ||
+                    msg.contains(
+                        "Unauthorized",
+                        ignoreCase = true
+                    )
+                ) {
+
+                    isAuthError =
+                        true
                 }
             }
-            if (clsName.contains("UnknownHostException") || msg.contains("UnknownHost", ignoreCase = true)) {
-                isHostError = true
+
+            if (
+                clsName.contains(
+                    "UnknownHostException"
+                ) ||
+                msg.contains(
+                    "UnknownHost",
+                    ignoreCase = true
+                )
+            ) {
+
+                isHostError =
+                    true
             }
 
             causes.add(
-                "${current::class.java.simpleName}: ${current.message}"
+                "${current::class.java.simpleName}: " +
+                    current.message
             )
 
             current =
@@ -720,10 +1220,23 @@ class RTSPPlayerEngine(
         }
 
         return buildString {
+
             if (isAuthError) {
-                append("RTSP 401 Unauthorized during SETUP/DESCRIBE. Source requires credentials (format: rtsp://username:password@host:port/path) | ")
+
+                append(
+                    "RTSP 401 Unauthorized during " +
+                        "SETUP/DESCRIBE. " +
+                        "Source requires credentials " +
+                        "(format: rtsp://username:password@host:port/path) | "
+                )
+
             } else if (isHostError) {
-                append("RTSP Host resolution failed (UnknownHostException). Check IP/domain and network connection | ")
+
+                append(
+                    "RTSP Host resolution failed " +
+                        "(UnknownHostException). " +
+                        "Check IP/domain and network connection | "
+                )
             }
 
             append(
@@ -732,15 +1245,22 @@ class RTSPPlayerEngine(
             )
 
             if (causes.isNotEmpty()) {
-                append(" | Cause chain: ")
+
                 append(
-                    causes.joinToString(" → ")
+                    " | Cause chain: "
+                )
+
+                append(
+                    causes.joinToString(
+                        " → "
+                    )
                 )
             }
         }
     }
 
     fun stopStream() {
+
         reconnectJob?.cancel()
         reconnectJob = null
 
@@ -751,12 +1271,14 @@ class RTSPPlayerEngine(
             exoPlayer?.stop()
             exoPlayer?.clearMediaItems()
         } catch (_: Exception) {
-            // Player may already have been released.
         }
 
-        diagnosticsManager?.removeBoundaryStage(
-            com.example.zesto.diagnostics.BoundaryDiagnosticStage.RTSP_CONNECTED
-        )
+        diagnosticsManager
+            ?.removeBoundaryStage(
+                com.example.zesto.diagnostics
+                    .BoundaryDiagnosticStage
+                    .RTSP_CONNECTED
+            )
 
         _streamState.value =
             StreamState.Disconnected
@@ -793,10 +1315,12 @@ class RTSPPlayerEngine(
 
         val fps =
             if (elapsed > 0) {
+
                 (
                     framesSinceLastFps *
                         1_000.0
                     ) / elapsed
+
             } else {
                 0.0
             }
@@ -822,6 +1346,7 @@ class RTSPPlayerEngine(
         _decoderStats.update { current ->
 
             current.copy(
+
                 width =
                     currentVideoWidth,
 
@@ -862,6 +1387,7 @@ class RTSPPlayerEngine(
         _streamStats.update { current ->
 
             current.copy(
+
                 framesReceived =
                     rendered,
 
@@ -882,10 +1408,7 @@ class RTSPPlayerEngine(
     }
 
     /**
-     * Fully releases the ExoPlayer and cancels all internal jobs.
-     *
-     * This method is required by ZestoStreamingService and
-     * ZestoViewModel during lifecycle cleanup.
+     * Fully releases ExoPlayer and GL resources.
      */
     fun release() {
 
@@ -911,12 +1434,16 @@ class RTSPPlayerEngine(
         }
 
         exoPlayer = null
+
         activeConfig = null
+
         frameListener = null
 
         try {
             offscreenFrameExtractor?.release()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
+
         offscreenFrameExtractor = null
         internalSurface = null
 
@@ -925,8 +1452,10 @@ class RTSPPlayerEngine(
         decodeErrorCount.set(0L)
 
         framesSinceLastFps = 0L
+
         currentVideoWidth = 0
         currentVideoHeight = 0
+
         decoderName = "Unknown"
 
         _streamState.value =
@@ -943,6 +1472,8 @@ class RTSPPlayerEngine(
     }
 
     companion object {
-        private const val TAG = "RTSPPlayerEngine"
+        private const val TAG =
+            "RTSPPlayerEngine"
     }
 }
+```

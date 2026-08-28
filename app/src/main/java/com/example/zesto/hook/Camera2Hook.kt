@@ -471,7 +471,7 @@ object Camera2Hook {
                         val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
                         try {
                             if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                                Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId")
+                                Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId hasBitmap=${bitmap != null} isRecycled=${bitmap?.isRecycled ?: true} bmpSize=${bitmap?.width}x${bitmap?.height} health=${frameResult.healthState}")
                                 Log.i(TAG, "[FRAME_RENDER_STARTED] Rendering cycle #$cycleCount onto Surface hash=@$hash in $targetPackage")
                                 Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
                             }

@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs"
+    "start": "node dist/server.cjs",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "lucide-react": "^1.16.0",
     "motion": "^12.40.0",
     "react": "^18.3.1",
@@ -16,10 +18,13 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@types/express": "^5.0.6",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.12",
     "typescript": "~5.7.2",
     "vite": "^6.0.7"
   }

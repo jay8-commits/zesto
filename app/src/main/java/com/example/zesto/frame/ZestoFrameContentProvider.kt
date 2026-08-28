@@ -116,15 +116,28 @@ class ZestoFrameContentProvider : ContentProvider() {
                 result.putDouble("bridge_fps", bridgeFps)
                 result.putBoolean("test_pattern_mode", ZestoFrameBridge.isTestPatternMode)
                 result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
-                if (frame.bitmap != null) {
+                result.putString("source_mode", frame.sourceMode.name)
+
+                var jpegSize = 0
+                if (frame.bitmap != null && !frame.bitmap.isRecycled) {
                     result.putParcelable(KEY_BITMAP, frame.bitmap)
+                    try {
+                        val baos = java.io.ByteArrayOutputStream()
+                        frame.bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, baos)
+                        val jpegBytes = baos.toByteArray()
+                        jpegSize = jpegBytes.size
+                        result.putByteArray("jpeg_buffer", jpegBytes)
+                        result.putInt("jpeg_size", jpegSize)
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Error compressing frame to JPEG: ${e.message}")
+                    }
                 }
                 if (buffer != null) {
                     result.putByteArray(KEY_BUFFER, buffer)
                 }
 
                 if (frame.frameId == 1L || frame.frameId % 60L == 0L) {
-                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} size=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms")
+                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} sourceMode=${frame.sourceMode} hasBitmap=${frame.bitmap != null} jpegSize=${jpegSize}B rawSize=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms isTestPattern=${ZestoFrameBridge.isTestPatternMode}")
                 }
             }
             METHOD_GET_FRAME_META -> {
@@ -165,7 +178,10 @@ class ZestoFrameContentProvider : ContentProvider() {
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
         val frame = ZestoFrameBridge.consumeLatestFrame()
-        val buffer = frame.buffer ?: return null
+        val bmp = frame.bitmap
+        val buffer = frame.buffer
+
+        if (bmp == null && buffer == null) return null
 
         val pipe = ParcelFileDescriptor.createPipe()
         val readSide = pipe[0]
@@ -174,7 +190,11 @@ class ZestoFrameContentProvider : ContentProvider() {
         pipeExecutor.execute {
             try {
                 FileOutputStream(writeSide.fileDescriptor).use { output ->
-                    output.write(buffer)
+                    if (bmp != null && !bmp.isRecycled) {
+                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, output)
+                    } else if (buffer != null) {
+                        output.write(buffer)
+                    }
                     output.flush()
                 }
             } catch (_: Exception) {

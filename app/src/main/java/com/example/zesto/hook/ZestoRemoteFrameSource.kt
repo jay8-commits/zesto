@@ -119,39 +119,70 @@ object ZestoRemoteFrameSource {
             val bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
             if (bundle != null) {
                 try {
-                    bundle.classLoader = Bitmap::class.java.classLoader
+                    val cl = context.classLoader ?: ZestoRemoteFrameSource::class.java.classLoader ?: ClassLoader.getSystemClassLoader()
+                    bundle.classLoader = cl
                 } catch (_: Throwable) {}
 
                 val providerRunning = bundle.getBoolean("provider_running", true)
                 val isStreaming = bundle.getBoolean("is_streaming", false)
                 val healthState = bundle.getString("health_state", "NO_FRAME")
-                val bitmap: Bitmap? = try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                val frameId = bundle.getLong("frame_id", 0L)
+                val width = bundle.getInt("width", 1080)
+                val height = bundle.getInt("height", 1920)
+                val timestampUs = bundle.getLong("timestamp_us", 0L)
+
+                // Layer 1: Direct Parcelable Bitmap
+                var transportUsed = "NONE"
+                var finalBitmap: Bitmap? = try {
+                    val bmp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                         bundle.getParcelable("bitmap", Bitmap::class.java)
                     } else {
                         @Suppress("DEPRECATION")
                         bundle.getParcelable<Bitmap>("bitmap")
                     }
+                    if (bmp != null && !bmp.isRecycled) {
+                        transportUsed = "DIRECT_BITMAP"
+                        bmp
+                    } else {
+                        null
+                    }
                 } catch (e: Throwable) {
-                    Log.w(TAG, "Error unmarshalling bitmap from bundle: ${e.message}")
+                    Log.w(TAG, "Direct Parcelable Bitmap unmarshalling failed: ${e.message}")
                     null
                 }
 
-                val frameId = bundle.getLong("frame_id", 0L)
-                val width = bundle.getInt("width", 1080)
-                val height = bundle.getInt("height", 1920)
-                val timestampUs = bundle.getLong("timestamp_us", 0L)
-                val buffer = bundle.getByteArray("buffer")
-                
-                val finalBitmap = bitmap ?: buffer?.let { buf ->
-                    try {
-                        android.graphics.BitmapFactory.decodeByteArray(buf, 0, buf.size)
-                    } catch (_: Throwable) {
-                        null
+                // Layer 2: High-reliability JPEG byte array in bundle
+                if (finalBitmap == null || finalBitmap.isRecycled) {
+                    val jpegBytes = bundle.getByteArray("jpeg_buffer") ?: bundle.getByteArray("buffer")
+                    if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                        try {
+                            val decoded = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                            if (decoded != null && !decoded.isRecycled) {
+                                finalBitmap = decoded
+                                transportUsed = "JPEG_BUFFER"
+                            }
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Error decoding jpeg_buffer: ${e.message}")
+                        }
                     }
                 }
 
-                val bufferSize = buffer?.size ?: (if (finalBitmap != null) finalBitmap.byteCount else 0)
+                // Layer 3: ContentProvider openInputStream fallback
+                if (finalBitmap == null || finalBitmap.isRecycled) {
+                    try {
+                        context.contentResolver.openInputStream(PROVIDER_URI)?.use { inputStream ->
+                            val streamed = android.graphics.BitmapFactory.decodeStream(inputStream)
+                            if (streamed != null && !streamed.isRecycled) {
+                                finalBitmap = streamed
+                                transportUsed = "PIPE_STREAM"
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.d(TAG, "Content stream read fallback note: ${e.message}")
+                    }
+                }
+
+                val bufferSize = if (finalBitmap != null) finalBitmap.byteCount else (bundle.getByteArray("jpeg_buffer")?.size ?: 0)
 
                 if (!isProviderAvailable) {
                     isProviderAvailable = true
@@ -159,12 +190,17 @@ object ZestoRemoteFrameSource {
                     Log.i(TAG, "[FRAME_BRIDGE] bridge connected (provider available=$providerRunning, streaming=$isStreaming)")
                 }
 
+                if (finalBitmap == null) {
+                    Log.w(TAG, "[FRAME_FETCH_EMPTY] Target process received NO valid bitmap from provider (providerRunning=$providerRunning, health=$healthState, isStreaming=$isStreaming). Falling back to standby test pattern.")
+                }
+
                 if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                     lastIpcLogMs = now
                     Log.i(TAG, "[FRAME_IPC_RETURNED] id=$frameId")
                     Log.i(TAG, "[IPC_FRAME_REQUEST] target=$attachedPackageName requested frame via ContentResolver.call")
+                    Log.i(TAG, "[IPC_FRAME_TRANSPORT] transport=$transportUsed frameId=$frameId dimensions=${width}x${height}")
                     Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=$frameId dimensions=${width}x${height} format=${bundle.getString("format", "RGBA_8888")}")
-                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${finalBitmap != null}")
+                    Log.i(TAG, "[IPC_FRAME_SIZE] bufferSize=${bufferSize}B hasBitmap=${finalBitmap != null} valid=${finalBitmap?.let { !it.isRecycled } ?: false}")
                     Log.i(TAG, "[IPC_FRAME_TIMESTAMP] timestampUs=${timestampUs}us health=$healthState")
                     Log.i(TAG, "[IPC_FRAME_COUNTER] bridgeFrameId=$frameId targetPackage=$attachedPackageName")
                 }

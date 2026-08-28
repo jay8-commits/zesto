@@ -225,6 +225,9 @@ object ZestoFrameTransformer {
                 }
             }
         } else {
+            if (frameId == 1L || frameId % 60L == 0L) {
+                Log.w(TAG, "[STANDBY_FALLBACK_TRIGGERED] Rendering test pattern fallback for target=$targetPackage (reason: bitmap is ${if (bitmap == null) "NULL" else "RECYCLED"}, healthState=$healthState)")
+            }
             renderPortraitStandbyPattern(canvas, targetPackage, frameId, healthState, fps)
         }
     }

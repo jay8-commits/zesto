@@ -226,7 +226,9 @@ class ZestoStreamingService : Service() {
                     format = frame.pixelFormat,
                     buffer = frame.buffer?.array(),
                     bitmap = frame.bitmap,
-                    timestampUs = frame.timestampUs
+                    timestampUs = frame.timestampUs,
+                    sourceMode = frame.sourceMode,
+                    externalFrameId = frame.frameNumber
                 )
             }
 

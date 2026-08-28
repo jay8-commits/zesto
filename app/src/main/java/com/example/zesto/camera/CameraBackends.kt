@@ -66,7 +66,9 @@ class Camera2Backend : CameraVirtualizationBackend {
             format = frame.pixelFormat,
             buffer = frame.buffer?.array(),
             bitmap = frame.bitmap,
-            timestampUs = frame.timestampUs
+            timestampUs = frame.timestampUs,
+            sourceMode = frame.sourceMode,
+            externalFrameId = frame.frameNumber
         )
     }
 
@@ -113,7 +115,9 @@ class LegacyCameraBackend : CameraVirtualizationBackend {
             format = PixelFormat.NV21,
             buffer = frame.buffer?.array(),
             bitmap = frame.bitmap,
-            timestampUs = frame.timestampUs
+            timestampUs = frame.timestampUs,
+            sourceMode = frame.sourceMode,
+            externalFrameId = frame.frameNumber
         )
     }
     override fun onConsumerDetached() {}
@@ -157,7 +161,9 @@ class CameraXIntegration : CameraVirtualizationBackend {
             format = PixelFormat.SURFACE_TEXTURE,
             buffer = frame.buffer?.array(),
             bitmap = frame.bitmap,
-            timestampUs = frame.timestampUs
+            timestampUs = frame.timestampUs,
+            sourceMode = frame.sourceMode,
+            externalFrameId = frame.frameNumber
         )
     }
     override fun onConsumerDetached() {}

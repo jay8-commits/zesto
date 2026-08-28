@@ -56,6 +56,15 @@ object ZestoRemoteFrameSource {
     fun getTargetContext(): Context? {
         if (targetAppContext != null) return targetAppContext
         try {
+            val appGlobalsClass = Class.forName("android.app.AppGlobals")
+            val getInitialAppMethod = appGlobalsClass.getMethod("getInitialApplication")
+            val app = getInitialAppMethod.invoke(null) as? Context
+            if (app != null) {
+                targetAppContext = app
+                return app
+            }
+        } catch (_: Throwable) {}
+        try {
             val activityThreadClass = Class.forName("android.app.ActivityThread")
             val currentAppMethod = activityThreadClass.getMethod("currentApplication")
             val app = currentAppMethod.invoke(null) as? Context
@@ -63,8 +72,20 @@ object ZestoRemoteFrameSource {
                 targetAppContext = app
                 return app
             }
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) {}
+        try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentActivityThreadMethod = activityThreadClass.getMethod("currentActivityThread")
+            val activityThread = currentActivityThreadMethod.invoke(null)
+            if (activityThread != null) {
+                val getAppMethod = activityThreadClass.getMethod("getApplication")
+                val app = getAppMethod.invoke(activityThread) as? Context
+                if (app != null) {
+                    targetAppContext = app
+                    return app
+                }
+            }
+        } catch (_: Throwable) {}
         return null
     }
 
@@ -116,7 +137,15 @@ object ZestoRemoteFrameSource {
         }
 
         return try {
-            val bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
+            var bundle: Bundle? = null
+            try {
+                bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
+            } catch (_: Throwable) {}
+            if (bundle == null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                try {
+                    bundle = context.contentResolver.call(AUTHORITY, "getLatestFrame", null, null)
+                } catch (_: Throwable) {}
+            }
             if (bundle != null) {
                 try {
                     val cl = context.classLoader ?: ZestoRemoteFrameSource::class.java.classLoader ?: ClassLoader.getSystemClassLoader()
@@ -131,39 +160,41 @@ object ZestoRemoteFrameSource {
                 val height = bundle.getInt("height", 1920)
                 val timestampUs = bundle.getLong("timestamp_us", 0L)
 
-                // Layer 1: Direct Parcelable Bitmap
+                // Layer 1: High-reliability JPEG byte array in bundle (PRIMARY TRANSPORT)
                 var transportUsed = "NONE"
-                var finalBitmap: Bitmap? = try {
-                    val bmp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        bundle.getParcelable("bitmap", Bitmap::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        bundle.getParcelable<Bitmap>("bitmap")
+                var finalBitmap: Bitmap? = null
+
+                val jpegBytes = bundle.getByteArray("jpeg_buffer") ?: bundle.getByteArray("buffer")
+                if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                    try {
+                        val decoded = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                        if (decoded != null && !decoded.isRecycled) {
+                            finalBitmap = decoded
+                            transportUsed = "JPEG_BUFFER"
+                            if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                                Log.i(TAG, "[IPC_JPEG_DECODE_SUCCESS] frameId=$frameId bitmap=${decoded.width}x${decoded.height}")
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Error decoding jpeg_buffer: ${e.message}")
                     }
-                    if (bmp != null && !bmp.isRecycled) {
-                        transportUsed = "DIRECT_BITMAP"
-                        bmp
-                    } else {
-                        null
-                    }
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Direct Parcelable Bitmap unmarshalling failed: ${e.message}")
-                    null
                 }
 
-                // Layer 2: High-reliability JPEG byte array in bundle
+                // Layer 2: Direct Parcelable Bitmap (optional fallback)
                 if (finalBitmap == null || finalBitmap.isRecycled) {
-                    val jpegBytes = bundle.getByteArray("jpeg_buffer") ?: bundle.getByteArray("buffer")
-                    if (jpegBytes != null && jpegBytes.isNotEmpty()) {
-                        try {
-                            val decoded = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                            if (decoded != null && !decoded.isRecycled) {
-                                finalBitmap = decoded
-                                transportUsed = "JPEG_BUFFER"
-                            }
-                        } catch (e: Throwable) {
-                            Log.w(TAG, "Error decoding jpeg_buffer: ${e.message}")
+                    try {
+                        val bmp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            bundle.getParcelable("bitmap", Bitmap::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            bundle.getParcelable<Bitmap>("bitmap")
                         }
+                        if (bmp != null && !bmp.isRecycled) {
+                            transportUsed = "DIRECT_BITMAP"
+                            finalBitmap = bmp
+                        }
+                    } catch (e: Throwable) {
+                        Log.d(TAG, "Direct Parcelable Bitmap fallback note: ${e.message}")
                     }
                 }
 

@@ -89,7 +89,7 @@ class ZestoFrameContentProvider : ContentProvider() {
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
         val result = Bundle()
-        val frame = ZestoFrameBridge.consumeLatestFrame()
+        val frame = ZestoFrameBridge.latestFrame.value
         val health = ZestoFrameBridge.getFrameHealthState()
         val msAgo = ZestoFrameBridge.getMillisecondsSinceLastFrame()
         val buffer = frame.buffer
@@ -120,10 +120,9 @@ class ZestoFrameContentProvider : ContentProvider() {
 
                 var jpegSize = 0
                 if (frame.bitmap != null && !frame.bitmap.isRecycled) {
-                    result.putParcelable(KEY_BITMAP, frame.bitmap)
                     try {
                         val baos = java.io.ByteArrayOutputStream()
-                        frame.bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, baos)
+                        frame.bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, baos)
                         val jpegBytes = baos.toByteArray()
                         jpegSize = jpegBytes.size
                         result.putByteArray("jpeg_buffer", jpegBytes)

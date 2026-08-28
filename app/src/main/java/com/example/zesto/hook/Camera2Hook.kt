@@ -113,6 +113,12 @@ object Camera2Hook {
                 val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
                 val method = param.method?.name ?: "openCamera"
                 Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraManager.$method(cameraId=$cameraId)")
+                try {
+                    val mContext = XposedHelpers.getObjectField(param.thisObject, "mContext") as? Context
+                    if (mContext != null) {
+                        ZestoRemoteFrameSource.setTargetContext(mContext)
+                    }
+                } catch (_: Throwable) {}
                 onCameraDeviceOpening(cameraId, "CameraManager.$method", targetPackage)
             }
         }
@@ -193,12 +199,49 @@ object Camera2Hook {
                     Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${s.isValid} in $targetPackage")
                 }
 
-                // Redirect hardware session to dummy sink so Camera HAL does NOT lock or write to the preview Surface
-                val dummy = getOrCreateDummySurface()
-                param.args[0] = listOf(dummy)
-                Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Redirected hardware session to dummy Surface@${System.identityHashCode(dummy).toString(16)}. Real preview surface(s) isolated.")
+                // Preserve the target app's real preview surfaces to allow Camera2 session initialization
+                // Wrap the StateCallback to trace configuration success/failure and start frame delivery onConfigured
+                val originalCallback = param.args.getOrNull(1) as? android.hardware.camera2.CameraCaptureSession.StateCallback
+                if (originalCallback != null) {
+                    param.args[1] = object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: android.hardware.camera2.CameraCaptureSession) {
+                            Log.i(TAG, "[PREVIEW_SESSION_CONFIGURED] CameraCaptureSession configured successfully for $targetPackage")
+                            try {
+                                originalCallback.onConfigured(session)
+                            } finally {
+                                onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(List)")
+                            }
+                        }
 
-                onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(List)")
+                        override fun onConfigureFailed(session: android.hardware.camera2.CameraCaptureSession) {
+                            Log.e(TAG, "[PREVIEW_SESSION_FAILED] CameraCaptureSession configuration failed for $targetPackage")
+                            originalCallback.onConfigureFailed(session)
+                        }
+
+                        override fun onClosed(session: android.hardware.camera2.CameraCaptureSession) {
+                            stopFramePump()
+                            originalCallback.onClosed(session)
+                        }
+
+                        override fun onReady(session: android.hardware.camera2.CameraCaptureSession) {
+                            originalCallback.onReady(session)
+                        }
+
+                        override fun onActive(session: android.hardware.camera2.CameraCaptureSession) {
+                            originalCallback.onActive(session)
+                        }
+
+                        override fun onCaptureQueueEmpty(session: android.hardware.camera2.CameraCaptureSession) {
+                            originalCallback.onCaptureQueueEmpty(session)
+                        }
+
+                        override fun onSurfacePrepared(session: android.hardware.camera2.CameraCaptureSession, surface: Surface) {
+                            originalCallback.onSurfacePrepared(session, surface)
+                        }
+                    }
+                } else {
+                    onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(List)")
+                }
             }
         }
 
@@ -240,23 +283,57 @@ object Camera2Hook {
                                 Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${s.isValid} in $targetPackage")
                             }
 
-                            // Redirect session outputs to dummy
-                            val dummy = getOrCreateDummySurface()
-                            try {
-                                val dummyOutputConfig = android.hardware.camera2.params.OutputConfiguration(dummy)
-                                val newSessionConfig = android.hardware.camera2.params.SessionConfiguration(
-                                    sessionConfig.sessionType,
-                                    listOf(dummyOutputConfig),
-                                    sessionConfig.executor,
-                                    sessionConfig.stateCallback
-                                )
-                                param.args[0] = newSessionConfig
-                                Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Redirected SessionConfiguration to dummy Surface. Real preview surfaces isolated.")
-                            } catch (e: Throwable) {
-                                Log.w(TAG, "[HARDWARE_REDIRECT_WARN] Could not rebuild SessionConfiguration: ${e.message}")
+                            // Wrap StateCallback for diagnostics while preserving target output configurations
+                            val origCallback = sessionConfig.stateCallback
+                            val wrappedCallback = object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(session: android.hardware.camera2.CameraCaptureSession) {
+                                    Log.i(TAG, "[PREVIEW_SESSION_CONFIGURED] CameraCaptureSession (SessionConfiguration) configured successfully for $targetPackage")
+                                    try {
+                                        origCallback.onConfigured(session)
+                                    } finally {
+                                        onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(SessionConfiguration)")
+                                    }
+                                }
+
+                                override fun onConfigureFailed(session: android.hardware.camera2.CameraCaptureSession) {
+                                    Log.e(TAG, "[PREVIEW_SESSION_FAILED] CameraCaptureSession (SessionConfiguration) configuration failed for $targetPackage")
+                                    origCallback.onConfigureFailed(session)
+                                }
+
+                                override fun onClosed(session: android.hardware.camera2.CameraCaptureSession) {
+                                    stopFramePump()
+                                    origCallback.onClosed(session)
+                                }
+
+                                override fun onReady(session: android.hardware.camera2.CameraCaptureSession) {
+                                    origCallback.onReady(session)
+                                }
+
+                                override fun onActive(session: android.hardware.camera2.CameraCaptureSession) {
+                                    origCallback.onActive(session)
+                                }
+
+                                override fun onCaptureQueueEmpty(session: android.hardware.camera2.CameraCaptureSession) {
+                                    origCallback.onCaptureQueueEmpty(session)
+                                }
+
+                                override fun onSurfacePrepared(session: android.hardware.camera2.CameraCaptureSession, surface: Surface) {
+                                    origCallback.onSurfacePrepared(session, surface)
+                                }
                             }
 
-                            onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(SessionConfiguration)")
+                            try {
+                                val newSessionConfig = android.hardware.camera2.params.SessionConfiguration(
+                                    sessionConfig.sessionType,
+                                    sessionConfig.outputConfigurations,
+                                    sessionConfig.executor,
+                                    wrappedCallback
+                                )
+                                param.args[0] = newSessionConfig
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "[SESSION_CONFIG_WRAP_WARN] Could not wrap SessionConfiguration callback: ${e.message}")
+                                onSessionConfigured(surfaces, targetPackage, "CameraDevice.createCaptureSession(SessionConfiguration)")
+                            }
                         }
                     }
                 }
@@ -314,11 +391,6 @@ object Camera2Hook {
                             val hash = System.identityHashCode(surface).toString(16)
                             Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera2\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
                             Log.i(TAG, "[SURFACE_CAPTURE_REQUEST_TARGET] Target Surface added to CaptureRequest: hash=@$hash valid=${surface.isValid} in $targetPackage")
-
-                            // Redirect request target to dummy surface
-                            val dummy = getOrCreateDummySurface()
-                            param.args[0] = dummy
-                            Log.i(TAG, "[CAPTURE_REQUEST_REDIRECTED] CaptureRequest target redirected to dummy Surface")
                         }
                     }
                 }
@@ -344,6 +416,9 @@ object Camera2Hook {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraCaptureSession.setRepeatingRequest")
                         Log.i(TAG, "[REPEATING_REQUEST_STARTED] CameraCaptureSession.setRepeatingRequest invoked in $targetPackage")
+                        if (!isPumping.get() && activeSurfaces.isNotEmpty()) {
+                            startFramePump(activeSurfaces, targetPackage)
+                        }
                     }
                 }
             )

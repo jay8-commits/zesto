@@ -102,6 +102,7 @@ class OffscreenFrameExtractor(
     private var vertexBuffer: FloatBuffer? = null
     private var textureBuffer: FloatBuffer? = null
     private var pixelBuffer: ByteBuffer? = null
+    private var flippedPixelBuffer: ByteBuffer? = null
     private var reusableBitmap: Bitmap? = null
 
     @Volatile
@@ -613,6 +614,12 @@ class OffscreenFrameExtractor(
             )
                 .order(ByteOrder.nativeOrder())
 
+        flippedPixelBuffer =
+            ByteBuffer.allocateDirect(
+                videoWidth * videoHeight * 4
+            )
+                .order(ByteOrder.nativeOrder())
+
         reusableBitmap =
             Bitmap.createBitmap(
                 videoWidth,
@@ -676,6 +683,12 @@ class OffscreenFrameExtractor(
                 )
 
                 pixelBuffer =
+                    ByteBuffer.allocateDirect(
+                        width * height * 4
+                    )
+                        .order(ByteOrder.nativeOrder())
+
+                flippedPixelBuffer =
                     ByteBuffer.allocateDirect(
                         width * height * 4
                     )
@@ -897,6 +910,21 @@ class OffscreenFrameExtractor(
 
             pBuf.rewind()
 
+            if (flippedPixelBuffer == null || flippedPixelBuffer?.capacity() != width * height * 4) {
+                flippedPixelBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+            }
+            val flippedBuf = flippedPixelBuffer!!
+            flippedBuf.rewind()
+
+            val rowStride = width * 4
+            val rowBytes = ByteArray(rowStride)
+            for (y in 0 until height) {
+                pBuf.position((height - 1 - y) * rowStride)
+                pBuf.get(rowBytes, 0, rowStride)
+                flippedBuf.put(rowBytes, 0, rowStride)
+            }
+            flippedBuf.rewind()
+
             val frameBitmap =
                 Bitmap.createBitmap(
                     width,
@@ -905,7 +933,7 @@ class OffscreenFrameExtractor(
                 )
 
             frameBitmap.copyPixelsFromBuffer(
-                pBuf
+                flippedBuf
             )
 
             val count = ++frameCount
@@ -917,6 +945,10 @@ class OffscreenFrameExtractor(
                 count == 1L ||
                 count % 60L == 0L
             ) {
+                Log.i(
+                    TAG,
+                    "[RTSP_FRAME_ORIENTATION] source=TOP_DOWN target=TOP_DOWN verticalFlipApplied=true"
+                )
                 Log.i(
                     TAG,
                     "[RTSP_FRAME_PIXELS_READY] frameId=$count dimensions=${width}x${height} timestampUs=$timestampUs"
@@ -1065,6 +1097,7 @@ class OffscreenFrameExtractor(
                 reusableBitmap = null
 
                 pixelBuffer = null
+                flippedPixelBuffer = null
                 vertexBuffer = null
                 textureBuffer = null
 

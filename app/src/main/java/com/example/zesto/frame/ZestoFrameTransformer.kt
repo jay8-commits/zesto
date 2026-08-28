@@ -326,6 +326,22 @@ object ZestoFrameTransformer {
             edgePaint
         )
 
+        // Directional Orientation Markers (TOP, BOTTOM, LEFT, RIGHT, Upward Arrow)
+        val dirPaint = Paint().apply {
+            color = Color.rgb(248, 250, 252)
+            textSize = (h * 0.016f).coerceIn(16f, 32f)
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+        val centerDirPaint = Paint(dirPaint).apply {
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("▲ TOP ▲", w / 2f, cardMarginY + (h * 0.032f), centerDirPaint)
+        canvas.drawText("▼ BOTTOM ▼", w / 2f, h - cardMarginY - (h * 0.015f), centerDirPaint)
+        canvas.drawText("◄ LEFT", cardMarginX + 16f, h / 2f, dirPaint)
+        val rightDirPaint = Paint(dirPaint).apply { textAlign = Paint.Align.RIGHT }
+        canvas.drawText("RIGHT ►", w - cardMarginX - 16f, h / 2f, rightDirPaint)
+
         val headerPaint = Paint().apply {
             color = Color.WHITE
             textSize = (h * 0.028f).coerceIn(28f, 54f)

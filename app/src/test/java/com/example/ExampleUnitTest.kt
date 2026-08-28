@@ -173,18 +173,22 @@ class ExampleUnitTest {
     @Test
     fun testBoundaryDiagnosticStagesDefined() {
         val stages = BoundaryDiagnosticStage.entries
-        assertEquals(11, stages.size)
+        assertEquals(15, stages.size)
         val expectedCodes = listOf(
             "RTSP_CONNECTED",
             "VIDEO_TRACK_DETECTED",
             "DECODER_INITIALIZED",
+            "FRAME_RECEIVED",
             "VIDEO_FRAME_DECODED",
+            "FRAME_CONVERTED",
+            "FRAME_INJECTED",
             "FRAME_BRIDGE_POSTED",
             "PATCH_MANIFEST_APPLICATION",
             "TARGET_PROCESS_ATTACHED",
             "CAMERA2_HOOK_INSTALLED",
             "CAMERA2_DEVICE_OPEN_INTERCEPTED",
             "FRAME_SUBSTITUTION_ACTIVE",
+            "FRAME_CONSUMED",
             "TARGET_PREVIEW_RECEIVED_FRAME"
         )
         stages.forEachIndexed { index, stage ->

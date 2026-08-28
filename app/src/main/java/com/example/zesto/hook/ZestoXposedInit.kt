@@ -93,7 +93,45 @@ class ZestoXposedInit : IXposedHookLoadPackage {
     }
 
     private fun hookCamera2Pipeline(classLoader: ClassLoader, packageName: String) {
+        hookApplicationContext(classLoader, packageName)
         Camera2Hook.attachHook(classLoader, packageName)
+    }
+
+    private fun hookApplicationContext(classLoader: ClassLoader, packageName: String) {
+        try {
+            de.robv.android.xposed.XposedHelpers.findAndHookMethod(
+                "android.app.Application",
+                classLoader,
+                "attachBaseContext",
+                android.content.Context::class.java,
+                object : de.robv.android.xposed.XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val app = param.thisObject as? android.app.Application
+                        if (app != null) {
+                            ZestoRemoteFrameSource.setTargetContext(app)
+                            Log.i(MODULE_TAG, "[TARGET_CONTEXT_BOUND] package=$packageName context=${app.javaClass.name}")
+                        }
+                    }
+                }
+            )
+        } catch (_: Throwable) {}
+
+        try {
+            de.robv.android.xposed.XposedHelpers.findAndHookMethod(
+                "android.app.Application",
+                classLoader,
+                "onCreate",
+                object : de.robv.android.xposed.XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val app = param.thisObject as? android.app.Application
+                        if (app != null) {
+                            ZestoRemoteFrameSource.setTargetContext(app)
+                            Log.i(MODULE_TAG, "[TARGET_CONTEXT_BOUND] package=$packageName context=${app.javaClass.name} (onCreate)")
+                        }
+                    }
+                }
+            )
+        } catch (_: Throwable) {}
     }
 
     private fun hookLegacyCameraPipeline(classLoader: ClassLoader, packageName: String) {

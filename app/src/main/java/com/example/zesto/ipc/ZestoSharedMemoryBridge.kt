@@ -57,6 +57,7 @@ object ZestoSharedMemoryBridge {
             writeBuffer = writeChannel?.map(FileChannel.MapMode.READ_WRITE, 0, FILE_SIZE)
             writeBuffer?.order(ByteOrder.LITTLE_ENDIAN)
             activeFilePath = path
+            Log.i(TAG, "[SHMEM_SERVER_STARTED] package=com.example.zesto path=$path size=${FILE_SIZE}B transport=SHARED_MEMORY")
             Log.i(TAG, "[SHARED_MEM_SERVER_INIT] Shared memory buffer initialized at '$path'")
         } catch (e: Exception) {
             Log.d(TAG, "Cannot init shared memory server at '$path': ${e.message}")

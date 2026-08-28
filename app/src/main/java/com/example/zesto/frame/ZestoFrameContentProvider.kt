@@ -54,6 +54,7 @@ class ZestoFrameContentProvider : ContentProvider() {
             com.example.zesto.ipc.ZestoIpcSocketServer.startServer()
             com.example.zesto.ipc.ZestoSharedMemoryBridge.initServer()
         } catch (_: Throwable) {}
+        Log.i(TAG, "[PROVIDER_STARTED] package=com.example.zesto authority=$AUTHORITY uri=$CONTENT_URI transport=CONTENT_PROVIDER")
         Log.i(TAG, "[FRAME_PROVIDER] provider created")
         Log.i(TAG, "[FRAME_PROVIDER] provider registered/available (providerRunning=true)")
         Log.i(TAG, "[ZESTO_PROCESS_INIT] ZestoFrameContentProvider initialized.")
@@ -140,6 +141,7 @@ class ZestoFrameContentProvider : ContentProvider() {
                 }
 
                 if (frame.frameId == 1L || frame.frameId % 60L == 0L) {
+                    Log.i(TAG, "[PROVIDER_CONNECT_SUCCESS] package=com.example.zesto caller=${callingPackage ?: "unknown"} method=$method frameId=${frame.frameId} res=${frame.width}x${frame.height} sourceMode=${frame.sourceMode} health=$health transport=CONTENT_PROVIDER")
                     Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} sourceMode=${frame.sourceMode} hasBitmap=${frame.bitmap != null} jpegSize=${jpegSize}B rawSize=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms isTestPattern=${ZestoFrameBridge.isTestPatternMode}")
                 }
             }

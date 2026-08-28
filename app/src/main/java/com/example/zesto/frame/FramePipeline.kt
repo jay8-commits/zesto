@@ -104,6 +104,10 @@ class FramePipeline(
     fun pushFrame(frame: VideoFrame) {
         val received = receivedCount.incrementAndGet()
 
+        if (received == 1L || received % 60L == 0L) {
+            Log.i(TAG, "[FRAME_PIPELINE_RECEIVED] package=com.example.zesto frameId=${frame.frameNumber} width=${frame.width} height=${frame.height} sourceMode=${frame.sourceMode} transport=PIPELINE_QUEUE")
+        }
+
         if (!isRunning.get() || consumers.isEmpty()) {
             val dropped = droppedCount.incrementAndGet()
             updateStats(frameDropped = true)

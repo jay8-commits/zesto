@@ -564,6 +564,11 @@ object Camera2Hook {
                                     fps = currentTargetFps
                                 )
                                 if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                                    if (bitmap != null) {
+                                        Log.i(TAG, "[CAMERA2_FRAME_INJECTED] package=$targetPackage frameId=$frameId res=${canvas.width}x${canvas.height} sourceMode=${frameResult.healthState} transport=SURFACE_CANVAS fps=${String.format(Locale.US, "%.1f", currentTargetFps)}")
+                                    } else {
+                                        Log.i(TAG, "[CAMERA2_HOOK_ACTIVE_NO_FRAME] package=$targetPackage cycle=$cycleCount status=${frameResult.healthState}")
+                                    }
                                     Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId")
                                     Log.i(TAG, "[FRAME_RENDERED_TO_SURFACE] Render completed on canvas ${canvas.width}x${canvas.height} for target=$targetPackage")
                                 }

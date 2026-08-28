@@ -116,6 +116,7 @@ object ZestoRemoteFrameSource {
             consecutiveErrors = 0
             if (localFrame.frameId == 1L || localFrame.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                 lastIpcLogMs = now
+                Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height} sourceMode=${localFrame.sourceMode} health=FRAME_INJECTION_ACTIVE transport=IN_PROCESS_BRIDGE")
                 Log.i(TAG, "[IPC_TIER_LOCAL] Direct bridge frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height}")
             }
             return RemoteFrameResult(
@@ -123,24 +124,33 @@ object ZestoRemoteFrameSource {
                 bitmap = localFrame.bitmap,
                 width = localFrame.width,
                 height = localFrame.height,
-                healthState = ZestoFrameBridge.getFrameHealthState().name,
+                healthState = "FRAME_INJECTION_ACTIVE",
                 isStreaming = true
             )
         }
+
+        var candidateHealthState = "SOCKET_UNREACHABLE"
+        var candidateIsStreaming = false
 
         // -------------------------------------------------------------
         // Tier 2: Linux Abstract Unix Domain Socket (Primary cross-process transport)
         // -------------------------------------------------------------
         try {
             val socketResult = ZestoIpcSocketClient.fetchLatestFrame()
-            if (socketResult != null && socketResult.bitmap != null && !socketResult.bitmap.isRecycled) {
+            if (socketResult != null) {
                 isProviderAvailable = true
                 consecutiveErrors = 0
-                if (socketResult.frameId == 1L || socketResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
-                    lastIpcLogMs = now
-                    Log.i(TAG, "[IPC_TIER_SOCKET] Received frameId=${socketResult.frameId} res=${socketResult.width}x${socketResult.height} hasBitmap=true target=$attachedPackageName")
+                candidateHealthState = if (socketResult.healthState.isNotEmpty() && socketResult.healthState != "NO_FRAME") socketResult.healthState else "BRIDGE_NO_FRAME"
+                candidateIsStreaming = socketResult.isStreaming
+
+                if (socketResult.bitmap != null && !socketResult.bitmap.isRecycled) {
+                    if (socketResult.frameId == 1L || socketResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                        lastIpcLogMs = now
+                        Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${socketResult.frameId} res=${socketResult.width}x${socketResult.height} sourceMode=RTSP health=FRAME_INJECTION_ACTIVE transport=UNIX_DOMAIN_SOCKET")
+                        Log.i(TAG, "[IPC_TIER_SOCKET] Received frameId=${socketResult.frameId} res=${socketResult.width}x${socketResult.height} hasBitmap=true target=$attachedPackageName")
+                    }
+                    return socketResult.copy(healthState = "FRAME_INJECTION_ACTIVE", isStreaming = true)
                 }
-                return socketResult
             }
         } catch (e: Throwable) {
             Log.d(TAG, "Socket IPC attempt note: ${e.message}")
@@ -151,14 +161,21 @@ object ZestoRemoteFrameSource {
         // -------------------------------------------------------------
         try {
             val shmResult = ZestoSharedMemoryBridge.readLatestFrame()
-            if (shmResult != null && shmResult.bitmap != null && !shmResult.bitmap.isRecycled) {
+            if (shmResult != null) {
                 isProviderAvailable = true
                 consecutiveErrors = 0
-                if (shmResult.frameId == 1L || shmResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
-                    lastIpcLogMs = now
-                    Log.i(TAG, "[IPC_TIER_SHARED_MEM] Received frameId=${shmResult.frameId} res=${shmResult.width}x${shmResult.height} hasBitmap=true target=$attachedPackageName")
+                if (candidateHealthState == "SOCKET_UNREACHABLE") {
+                    candidateHealthState = if (shmResult.healthState.isNotEmpty() && shmResult.healthState != "NO_FRAME") shmResult.healthState else "BRIDGE_NO_FRAME"
                 }
-                return shmResult
+
+                if (shmResult.bitmap != null && !shmResult.bitmap.isRecycled) {
+                    if (shmResult.frameId == 1L || shmResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                        lastIpcLogMs = now
+                        Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${shmResult.frameId} res=${shmResult.width}x${shmResult.height} sourceMode=RTSP health=FRAME_INJECTION_ACTIVE transport=SHARED_MEMORY")
+                        Log.i(TAG, "[IPC_TIER_SHARED_MEM] Received frameId=${shmResult.frameId} res=${shmResult.width}x${shmResult.height} hasBitmap=true target=$attachedPackageName")
+                    }
+                    return shmResult.copy(healthState = "FRAME_INJECTION_ACTIVE", isStreaming = true)
+                }
             }
         } catch (e: Throwable) {
             Log.d(TAG, "Shared memory IPC attempt note: ${e.message}")
@@ -169,32 +186,42 @@ object ZestoRemoteFrameSource {
         // -------------------------------------------------------------
         val context = getTargetContext()
         if (context == null) {
+            val reportedHealth = if (candidateHealthState != "SOCKET_UNREACHABLE") candidateHealthState else "PROVIDER_NOT_STARTED"
             return RemoteFrameResult(
                 frameId = 0L,
                 bitmap = null,
                 width = 1080,
                 height = 1920,
-                healthState = "AWAITING_ZESTO_PROVIDER",
-                isStreaming = false
+                healthState = reportedHealth,
+                isStreaming = candidateIsStreaming
             )
         }
 
         if (!isProviderAvailable && now < nextProviderCheckMs) {
+            val reportedHealth = if (candidateHealthState != "SOCKET_UNREACHABLE") candidateHealthState else "PROVIDER_UNREACHABLE"
             return RemoteFrameResult(
                 frameId = 0L,
                 bitmap = null,
                 width = 1080,
                 height = 1920,
-                healthState = "AWAITING_ZESTO_PROVIDER",
-                isStreaming = false
+                healthState = reportedHealth,
+                isStreaming = candidateIsStreaming
             )
         }
 
         return try {
+            if (now - lastIpcLogMs > 4000L) {
+                Log.i(TAG, "[PROVIDER_CONNECT_ATTEMPT] package=$attachedPackageName target=$attachedPackageName transport=CONTENT_PROVIDER uri=$PROVIDER_URI")
+            }
+
             var bundle: Bundle? = null
             try {
                 bundle = context.contentResolver.call(PROVIDER_URI, "getLatestFrame", null, null)
-            } catch (_: Throwable) {}
+            } catch (e: Throwable) {
+                if (now - lastIpcLogMs > 4000L) {
+                    Log.w(TAG, "[PROVIDER_CONNECT_FAILED] package=$attachedPackageName transport=CONTENT_PROVIDER error=${e.message}")
+                }
+            }
 
             if (bundle == null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 try {
@@ -255,8 +282,22 @@ object ZestoRemoteFrameSource {
                 isProviderAvailable = true
                 consecutiveErrors = 0
 
+                val effectiveHealth = if (finalBitmap != null) {
+                    "FRAME_INJECTION_ACTIVE"
+                } else if (healthState == "FRAME_ACTIVE") {
+                    "FRAME_ACTIVE"
+                } else if (isStreaming) {
+                    "RTSP_CONNECTED_NO_FRAMES"
+                } else {
+                    "BRIDGE_NO_FRAME"
+                }
+
                 if (frameId == 1L || frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                     lastIpcLogMs = now
+                    Log.i(TAG, "[PROVIDER_CONNECT_SUCCESS] package=$attachedPackageName frameId=$frameId res=${width}x${height} sourceMode=RTSP health=$effectiveHealth hasBitmap=${finalBitmap != null} transport=CONTENT_PROVIDER")
+                    if (finalBitmap != null) {
+                        Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=$frameId res=${width}x${height} sourceMode=RTSP health=$effectiveHealth transport=CONTENT_PROVIDER")
+                    }
                     Log.i(TAG, "[IPC_TIER_CONTENT_PROVIDER] frameId=$frameId hasBitmap=${finalBitmap != null} target=$attachedPackageName")
                 }
 
@@ -265,16 +306,32 @@ object ZestoRemoteFrameSource {
                     bitmap = finalBitmap,
                     width = width,
                     height = height,
-                    healthState = healthState ?: "NO_FRAME",
+                    healthState = effectiveHealth,
                     isStreaming = isStreaming || finalBitmap != null
                 )
             } else {
                 handleProviderUnavailable(now)
-                RemoteFrameResult()
+                val fallbackState = if (candidateHealthState != "SOCKET_UNREACHABLE") candidateHealthState else "PROVIDER_UNREACHABLE"
+                RemoteFrameResult(
+                    frameId = 0L,
+                    bitmap = null,
+                    width = 1080,
+                    height = 1920,
+                    healthState = fallbackState,
+                    isStreaming = candidateIsStreaming
+                )
             }
         } catch (e: Exception) {
             handleProviderUnavailable(now, e.message)
-            RemoteFrameResult()
+            val fallbackState = if (candidateHealthState != "SOCKET_UNREACHABLE") candidateHealthState else "PROVIDER_UNREACHABLE"
+            RemoteFrameResult(
+                frameId = 0L,
+                bitmap = null,
+                width = 1080,
+                height = 1920,
+                healthState = fallbackState,
+                isStreaming = candidateIsStreaming
+            )
         }
     }
 

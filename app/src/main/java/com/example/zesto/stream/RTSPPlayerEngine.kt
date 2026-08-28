@@ -197,6 +197,10 @@ class RTSPPlayerEngine(
 
             Log.i(
                 TAG,
+                "[RTSP_FRAME_DECODED] package=com.example.zesto frameId=$count width=$width height=$height sourceMode=RTSP transport=MEDIA3_HARDWARE_DECODER"
+            )
+            Log.i(
+                TAG,
                 "[RTSP_FRAME_PIXELS_READY] " +
                     "id=$count " +
                     "width=$width " +
@@ -249,6 +253,10 @@ class RTSPPlayerEngine(
                 count % 60L == 0L
             ) {
 
+                Log.i(
+                    TAG,
+                    "[FRAME_BRIDGE_POSTED] package=com.example.zesto frameId=$count width=$width height=$height sourceMode=RTSP transport=IN_MEMORY_BRIDGE"
+                )
                 Log.i(
                     TAG,
                     "[RTSP_TO_FRAME_BRIDGE] " +

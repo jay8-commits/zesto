@@ -59,6 +59,7 @@ object ZestoIpcSocketServer {
             try {
                 // Try abstract namespace first
                 serverSocket = LocalServerSocket(SOCKET_NAME)
+                Log.i(TAG, "[SOCKET_SERVER_STARTED] package=com.example.zesto socket=$SOCKET_NAME transport=UNIX_DOMAIN_SOCKET")
                 Log.i(TAG, "[IPC_SERVER_STARTED] Abstract Unix domain socket server listening on '$SOCKET_NAME'")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to bind abstract local socket '$SOCKET_NAME': ${e.message}")

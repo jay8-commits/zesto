@@ -73,6 +73,25 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Cross-Process Frame IPC Binder Service -->
+        <service
+            android:name="com.example.zesto.ipc.ZestoFrameBinderService"
+            android:enabled="true"
+            android:exported="true"
+            tools:ignore="ExportedService" />
+
+        <!-- Cross-Process Frame IPC Broadcast Receiver -->
+        <receiver
+            android:name="com.example.zesto.ipc.ZestoFrameReceiver"
+            android:enabled="true"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.example.zesto.ACTION_GET_BINDER" />
+                <action android:name="com.example.zesto.ACTION_CONNECT_IPC" />
+            </intent-filter>
+        </receiver>
+
         <!-- Cross-Process Frame IPC ContentProvider -->
         <provider
             android:name="com.example.zesto.frame.ZestoFrameContentProvider"

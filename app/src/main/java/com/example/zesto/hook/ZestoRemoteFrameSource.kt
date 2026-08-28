@@ -129,11 +129,36 @@ object ZestoRemoteFrameSource {
             )
         }
 
-        var candidateHealthState = "SOCKET_UNREACHABLE"
+        var candidateHealthState = "BINDER_CONNECTING"
         var candidateIsStreaming = false
+        val context = getTargetContext()
 
         // -------------------------------------------------------------
-        // Tier 2: Linux Abstract Unix Domain Socket (Primary cross-process transport)
+        // Tier 2: Android Binder & SharedMemory IPC (Primary cross-UID transport)
+        // -------------------------------------------------------------
+        try {
+            val binderResult = com.example.zesto.ipc.ZestoBinderClient.fetchLatestFrame(context)
+            if (binderResult != null) {
+                isProviderAvailable = true
+                consecutiveErrors = 0
+                candidateHealthState = if (binderResult.healthState.isNotEmpty() && binderResult.healthState != "NO_FRAME") binderResult.healthState else "BRIDGE_NO_FRAME"
+                candidateIsStreaming = binderResult.isStreaming
+
+                if (binderResult.bitmap != null && !binderResult.bitmap.isRecycled) {
+                    if (binderResult.frameId == 1L || binderResult.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                        lastIpcLogMs = now
+                        Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${binderResult.frameId} res=${binderResult.width}x${binderResult.height} sourceMode=RTSP health=FRAME_INJECTION_ACTIVE transport=BINDER_SHARED_MEMORY")
+                        Log.i(TAG, "[IPC_TIER_BINDER_SHM] Received frameId=${binderResult.frameId} res=${binderResult.width}x${binderResult.height} hasBitmap=true target=$attachedPackageName")
+                    }
+                    return binderResult.copy(healthState = "FRAME_INJECTION_ACTIVE", isStreaming = true)
+                }
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Binder IPC attempt note: ${e.message}")
+        }
+
+        // -------------------------------------------------------------
+        // Tier 3: Linux Abstract Unix Domain Socket / TCP
         // -------------------------------------------------------------
         try {
             val socketResult = ZestoIpcSocketClient.fetchLatestFrame()
@@ -157,14 +182,14 @@ object ZestoRemoteFrameSource {
         }
 
         // -------------------------------------------------------------
-        // Tier 3: Atomic Dual-Buffer Shared Memory
+        // Tier 4: Atomic Dual-Buffer Shared Memory / File Bridge
         // -------------------------------------------------------------
         try {
             val shmResult = ZestoSharedMemoryBridge.readLatestFrame()
             if (shmResult != null) {
                 isProviderAvailable = true
                 consecutiveErrors = 0
-                if (candidateHealthState == "SOCKET_UNREACHABLE") {
+                if (candidateHealthState == "BINDER_CONNECTING" || candidateHealthState == "SOCKET_UNREACHABLE") {
                     candidateHealthState = if (shmResult.healthState.isNotEmpty() && shmResult.healthState != "NO_FRAME") shmResult.healthState else "BRIDGE_NO_FRAME"
                 }
 
@@ -182,11 +207,10 @@ object ZestoRemoteFrameSource {
         }
 
         // -------------------------------------------------------------
-        // Tier 4: ContentProvider ContentResolver IPC fallback
+        // Tier 5: ContentProvider ContentResolver IPC fallback
         // -------------------------------------------------------------
-        val context = getTargetContext()
         if (context == null) {
-            val reportedHealth = if (candidateHealthState != "SOCKET_UNREACHABLE") candidateHealthState else "PROVIDER_NOT_STARTED"
+            val reportedHealth = if (candidateHealthState != "BINDER_CONNECTING") candidateHealthState else "PROVIDER_NOT_STARTED"
             return RemoteFrameResult(
                 frameId = 0L,
                 bitmap = null,

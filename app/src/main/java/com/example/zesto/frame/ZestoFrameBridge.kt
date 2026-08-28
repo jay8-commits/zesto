@@ -493,8 +493,18 @@ object ZestoFrameBridge {
         _latestFrame.value =
             frame
 
-        // Broadcast to high-performance Unix Domain Socket Server and Shared Memory Bridge
+        // Broadcast to high-performance Android Binder/SharedMemory, Unix Domain Socket Server, and Shared Memory Bridge
         try {
+            com.example.zesto.ipc.ZestoFrameBinder.writeFrame(
+                frameId = id,
+                timestampUs = timestampUs,
+                width = width,
+                height = height,
+                bitmap = bitmap,
+                rawBytes = buffer,
+                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
+                healthState = getFrameHealthState().name
+            )
             com.example.zesto.ipc.ZestoIpcSocketServer.updateFrame(
                 frameId = id,
                 timestampUs = timestampUs,

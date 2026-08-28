@@ -29,12 +29,13 @@ object ZestoFrameBinder {
 
     const val HEADER_MAGIC = 0x5A455354 // "ZEST"
     const val SHM_SIZE = 4 * 1024 * 1024 // 4 MB
-    const val SLOT_SIZE = 2 * 1024 * 1024 // 2 MB per slot
+    const val HEADER_RESERVED = 64
+    const val SLOT_SIZE = 2 * 1024 * 1024 - 128 // ~2 MB per slot
 
     private var sharedMemory: SharedMemory? = null
     private var writeBuffer: ByteBuffer? = null
     private var activeSlotIndex = 0
-    private var globalSeqCounter = 2L
+    private val globalSeqCounter = java.util.concurrent.atomic.AtomicLong(10L)
 
     private val binderInstance = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
@@ -147,15 +148,13 @@ object ZestoFrameBinder {
         }
 
         val targetSlot = 1 - activeSlotIndex
-        val slotOffset = 4 + (targetSlot * SLOT_SIZE)
-
-        // Increment sequence to ODD number to indicate write-in-progress
-        val seqStart = ++globalSeqCounter
+        val slotOffset = HEADER_RESERVED + (targetSlot * SLOT_SIZE)
+        val currentSeq = globalSeqCounter.incrementAndGet()
         val payloadSize = jpegBytes.size
 
         buf.position(slotOffset)
         buf.putInt(HEADER_MAGIC)
-        buf.putLong(seqStart)
+        buf.putLong(currentSeq)
         buf.putLong(frameId)
         buf.putLong(timestampUs)
         buf.putInt(width)
@@ -163,19 +162,17 @@ object ZestoFrameBinder {
         buf.putInt(if (isStreaming) 1 else 0)
         buf.putInt(payloadSize)
         buf.put(jpegBytes)
+        buf.putLong(currentSeq) // trailer sequence matches header sequence
 
-        // Write closing sequence number (EVEN number = write complete)
-        val seqEnd = ++globalSeqCounter
-        buf.putLong(seqEnd)
-
-        // Atomically update header slot pointer (at offset 0)
+        // Atomically publish active slot pointer and global sequence at offset 0
         buf.position(0)
         buf.putInt(targetSlot)
+        buf.putLong(currentSeq)
 
         activeSlotIndex = targetSlot
 
         if (frameId == 1L || frameId % 60L == 0L) {
-            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] frameId=$frameId bytes=$payloadSize res=${width}x${height} slot=$targetSlot")
+            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] frameId=$frameId bytes=$payloadSize res=${width}x${height} slot=$targetSlot seq=$currentSeq")
         }
     }
 

@@ -129,7 +129,7 @@ object ZestoRemoteFrameSource {
             )
         }
 
-        var candidateHealthState = "BINDER_CONNECTING"
+        var candidateHealthState = if (com.example.zesto.ipc.ZestoBinderClient.isConnected()) "BINDER_CONNECTED_WAITING_FRAME" else "BINDER_CONNECTING"
         var candidateIsStreaming = false
         val context = getTargetContext()
 

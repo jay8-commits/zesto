@@ -30,11 +30,12 @@ object ZestoBinderClient {
     private const val TAG = "ZestoBinderClient"
 
     private const val HEADER_MAGIC = 0x5A455354 // "ZEST"
-    private const val SLOT_SIZE = 2 * 1024 * 1024 // 2 MB
+    private const val HEADER_RESERVED = 64
+    private const val SLOT_SIZE = 2 * 1024 * 1024 - 128 // ~2 MB
 
     private val CANDIDATE_PACKAGES = listOf(
-        "com.example.zesto",
-        "com.aistudio.zesto.vcam"
+        "com.aistudio.zesto.vcam",
+        "com.example.zesto"
     )
 
     private var zestoBinder: IBinder? = null
@@ -200,11 +201,12 @@ object ZestoBinderClient {
             // Read active slot index from offset 0
             buf.position(0)
             val activeSlot = buf.getInt()
+            val globalSeq = buf.getLong()
             if (activeSlot != 0 && activeSlot != 1) {
                 return null
             }
 
-            val slotOffset = 4 + (activeSlot * SLOT_SIZE)
+            val slotOffset = HEADER_RESERVED + (activeSlot * SLOT_SIZE)
             buf.position(slotOffset)
 
             val magic = buf.getInt()
@@ -212,7 +214,7 @@ object ZestoBinderClient {
                 return null
             }
 
-            val seqStart = buf.getLong()
+            val headerSeq = buf.getLong()
             val frameId = buf.getLong()
             val timestampUs = buf.getLong()
             val width = buf.getInt()
@@ -227,19 +229,20 @@ object ZestoBinderClient {
             val payload = ByteArray(payloadSize)
             buf.get(payload)
 
-            val seqEnd = buf.getLong()
+            val trailerSeq = buf.getLong()
 
-            // Verify atomic read: seqStart must equal seqEnd and must be EVEN (write completed)
-            if (seqStart != seqEnd || (seqEnd % 2L) != 0L) {
+            // Verify atomic read: headerSeq must match trailerSeq and be valid
+            if (headerSeq != trailerSeq || headerSeq <= 0L) {
                 return null
             }
 
             var bitmap = cachedBitmap
             if (bitmap == null || bitmap.isRecycled || frameId != cachedFrameId) {
                 try {
-                    bitmap = BitmapFactory.decodeByteArray(payload, 0, payloadSize)
-                    if (bitmap != null) {
-                        cachedBitmap = bitmap
+                    val decoded = BitmapFactory.decodeByteArray(payload, 0, payloadSize)
+                    if (decoded != null) {
+                        bitmap = decoded
+                        cachedBitmap = decoded
                         cachedFrameId = frameId
                     }
                 } catch (e: Throwable) {
@@ -247,10 +250,14 @@ object ZestoBinderClient {
                 }
             }
 
+            if (bitmap == null || bitmap.isRecycled) {
+                return null
+            }
+
             val now = System.currentTimeMillis()
             if (frameId == 1L || frameId % 60L == 0L || (now - lastSuccessLogMs) > 2000L) {
                 lastSuccessLogMs = now
-                Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId res=${width}x${height} bytes=$payloadSize slot=$activeSlot")
+                Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId res=${width}x${height} bytes=$payloadSize slot=$activeSlot seq=$headerSeq")
             }
 
             return RemoteFrameResult(

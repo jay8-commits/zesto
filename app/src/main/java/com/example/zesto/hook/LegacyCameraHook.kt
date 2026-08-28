@@ -61,6 +61,8 @@ object LegacyCameraHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
+                        Log.i(TAG, "[LEGACY_CAMERA_OPEN_INTERCEPTED] Camera.open(cameraId=$cameraId) in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open(cameraId=$cameraId)")
                         val msg = "Target process ($targetPackage) requested Camera1 device: cameraId=$cameraId"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -75,6 +77,8 @@ object LegacyCameraHook {
                 "open",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
+                        Log.i(TAG, "[LEGACY_CAMERA_OPEN_INTERCEPTED] Camera.open() default device in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open()")
                         val msg = "Target process ($targetPackage) requested default Camera1 device"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -90,6 +94,7 @@ object LegacyCameraHook {
                 SurfaceHolder::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewDisplay(SurfaceHolder)")
                         val holder = param.args.getOrNull(0) as? SurfaceHolder
                         if (holder != null) {
@@ -99,19 +104,17 @@ object LegacyCameraHook {
                 }
             )
 
-            // Hook setPreviewTexture(SurfaceTexture) with hardware redirection
+            // Hook setPreviewTexture(SurfaceTexture)
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "setPreviewTexture",
                 SurfaceTexture::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewTexture(SurfaceTexture)")
                         val texture = param.args.getOrNull(0) as? SurfaceTexture
                         if (texture != null) {
-                            // Redirect hardware camera to dummy texture so preview texture is isolated
-                            param.args[0] = getOrCreateDummyTexture()
-                            Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Camera1 preview texture redirected to dummy SurfaceTexture. Real preview isolated.")
                             onPreviewTextureSet(texture, targetPackage)
                         }
                     }
@@ -124,6 +127,8 @@ object LegacyCameraHook {
                 "startPreview",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
+                        Log.i(TAG, "[LEGACY_CAMERA_PREVIEW_STARTED] Camera.startPreview() in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.startPreview()")
                     }
                 }

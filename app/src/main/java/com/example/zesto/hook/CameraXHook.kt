@@ -46,6 +46,8 @@ object CameraXHook {
                 Class.forName("androidx.camera.core.Preview\$SurfaceProvider", false, classLoader),
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_API_DETECTED] api=CAMERAX")
+                        Log.i(TAG, "[CAMERAX_PREVIEW_CONFIGURED] Preview.setSurfaceProvider in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Preview.setSurfaceProvider")
                         val msg = "Target process ($targetPackage) configured CameraX Preview SurfaceProvider"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -53,6 +55,27 @@ object CameraXHook {
                     }
                 }
             )
+
+            // Hook ProcessCameraProvider.bindToLifecycle
+            try {
+                val providerClass = Class.forName("androidx.camera.lifecycle.ProcessCameraProvider", false, classLoader)
+                val methods = providerClass.declaredMethods
+                for (m in methods) {
+                    if (m.name == "bindToLifecycle") {
+                        XposedHelpers.findAndHookMethod(
+                            providerClass,
+                            m.name,
+                            *m.parameterTypes,
+                            object : XC_MethodHook() {
+                                override fun beforeHookedMethod(param: MethodHookParam) {
+                                    Log.i(TAG, "[CAMERA_API_DETECTED] api=CAMERAX")
+                                    Log.i(TAG, "[CAMERAX_BIND_INTERCEPTED] ProcessCameraProvider.bindToLifecycle in $targetPackage")
+                                }
+                            }
+                        )
+                    }
+                }
+            } catch (_: Throwable) {}
 
             currentStatus = CameraXStatus.HOOK_REGISTERED
             Log.i(TAG, "[HOOK_REGISTERED] androidx.camera.core.Preview class hooked for package: $targetPackage")

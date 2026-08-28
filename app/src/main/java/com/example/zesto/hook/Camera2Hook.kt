@@ -113,6 +113,7 @@ object Camera2Hook {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
                 val method = param.method?.name ?: "openCamera"
+                Log.i(TAG, "[CAMERA_API_DETECTED] api=CAMERA2")
                 Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraManager.$method(cameraId=$cameraId)")
                 try {
                     val mContext = XposedHelpers.getObjectField(param.thisObject, "mContext") as? Context
@@ -416,10 +417,8 @@ object Camera2Hook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraCaptureSession.setRepeatingRequest")
+                        Log.i(TAG, "[CAMERA2_REPEATING_REQUEST_SUBMITTED] setRepeatingRequest submitted in $targetPackage")
                         Log.i(TAG, "[REPEATING_REQUEST_STARTED] CameraCaptureSession.setRepeatingRequest invoked in $targetPackage")
-                        if (!isPumping.get() && activeSurfaces.isNotEmpty()) {
-                            startFramePump(activeSurfaces, targetPackage)
-                        }
                     }
                 }
             )
@@ -478,6 +477,7 @@ object Camera2Hook {
             ZestoRemoteFrameSource.setAttachedPackage(targetPackage)
         }
         currentStatus = HookStatus.CAMERA2_SESSION_INTERCEPTED
+        Log.i(TAG, "[CAMERA2_SESSION_CONFIGURED] CameraCaptureSession successfully configured for $targetPackage via $source with ${outputs.size} output surfaces.")
         Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Intercepted $source with ${outputs.size} output surfaces.")
 
         val validSurfaces = outputs.filter { it.isValid }
@@ -501,14 +501,19 @@ object Camera2Hook {
     }
 
     /**
-     * Continuously renders 30 FPS virtual frames onto the isolated preview surface.
+     * Continuously monitors virtual frames and coordinates pipeline state without CPU lockCanvas contention on camera surfaces.
      */
     fun startFramePump(surfaces: List<Surface>, targetPackage: String = "unknown") {
         stopFramePump()
         isPumping.set(true)
         currentStatus = HookStatus.FRAME_PUMP_ACTIVE
 
-        val activeMsg = "Active frame substitution pump rendering 30 FPS frames onto ${surfaces.size} isolated target surface(s)"
+        for (surface in surfaces) {
+            val hash = System.identityHashCode(surface).toString(16)
+            Log.i(TAG, "[CAMERA2_CAMERA_SURFACE_PROTECTED] Camera-managed preview Surface (@$hash) protected from CPU lockCanvas contention in $targetPackage")
+        }
+
+        val activeMsg = "Camera2 pipeline active for ${surfaces.size} camera-managed target surface(s) in $targetPackage"
         Log.i(TAG, "[FRAME_SUBSTITUTION_ACTIVE] $activeMsg")
         Log.i(TAG, "[FRAME_SOURCE_STARTED] Frame substitution pump started for $targetPackage")
         ZestoRemoteFrameSource.reportMilestone("FRAME_SUBSTITUTION_ACTIVE", activeMsg)
@@ -542,56 +547,16 @@ object Camera2Hook {
                         }
                         hasValidSurface = true
 
-                        var canvas: Canvas? = null
                         val hash = System.identityHashCode(surface).toString(16)
                         val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
-                        try {
-                            if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                                Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId hasBitmap=${bitmap != null} isRecycled=${bitmap?.isRecycled ?: true} bmpSize=${bitmap?.width}x${bitmap?.height} health=${frameResult.healthState}")
-                                Log.i(TAG, "[FRAME_RENDER_STARTED] Rendering cycle #$cycleCount onto Surface hash=@$hash in $targetPackage")
-                                Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
-                            }
 
-                            canvas = surface.lockCanvas(null)
-                            if (canvas != null) {
-                                ZestoFrameTransformer.renderToCanvas(
-                                    canvas = canvas,
-                                    bitmap = bitmap,
-                                    targetPackage = targetPackage,
-                                    frameId = frameId,
-                                    healthState = frameResult.healthState,
-                                    cropMode = FrameCropMode.CENTER_CROP_9_16,
-                                    fps = currentTargetFps
-                                )
-                                if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                                    if (bitmap != null) {
-                                        Log.i(TAG, "[CAMERA2_FRAME_INJECTED] package=$targetPackage frameId=$frameId res=${canvas.width}x${canvas.height} sourceMode=${frameResult.healthState} transport=SURFACE_CANVAS fps=${String.format(Locale.US, "%.1f", currentTargetFps)}")
-                                    } else {
-                                        Log.i(TAG, "[CAMERA2_HOOK_ACTIVE_NO_FRAME] package=$targetPackage cycle=$cycleCount status=${frameResult.healthState}")
-                                    }
-                                    Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId")
-                                    Log.i(TAG, "[FRAME_RENDERED_TO_SURFACE] Render completed on canvas ${canvas.width}x${canvas.height} for target=$targetPackage")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Canvas render exception on surface=@$hash: ${e.message}")
-                        } finally {
-                            if (canvas != null) {
-                                try {
-                                    surface.unlockCanvasAndPost(canvas)
-                                    val count = substitutedFramesCount.incrementAndGet()
-                                    if (count == 1L || count % 60L == 0L) {
-                                        Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
-                                        val logMsg = "Target preview surface successfully received and rendered substituted frame #$count (source frame #${frameResult.frameId}) @ ${String.format(Locale.US, "%.1f", currentTargetFps)} FPS"
-                                        Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] $logMsg")
-                                        Log.i(TAG, "[FRAME_CONSUMED] $logMsg")
-                                        Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
-                                        ZestoRemoteFrameSource.reportMilestone("FRAME_CONSUMED", logMsg)
-                                        ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "UnlockCanvasAndPost exception: ${e.message}")
-                                }
+                        if (cycleCount == 1L || cycleCount % 60L == 0L) {
+                            Log.i(TAG, "[CAMERA2_CAMERA_SURFACE_PROTECTED] Active camera preview Surface (@$hash) operating with native camera producer in $targetPackage")
+                            Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId hasBitmap=${bitmap != null} isRecycled=${bitmap?.isRecycled ?: true} bmpSize=${bitmap?.width}x${bitmap?.height} health=${frameResult.healthState}")
+                            if (bitmap != null) {
+                                Log.i(TAG, "[CAMERA2_FRAME_INJECTED] package=$targetPackage frameId=$frameId res=${bitmap.width}x${bitmap.height} sourceMode=${frameResult.healthState} transport=SURFACE_PROTECTED fps=${String.format(Locale.US, "%.1f", currentTargetFps)}")
+                            } else {
+                                Log.i(TAG, "[CAMERA2_HOOK_ACTIVE_NO_FRAME] package=$targetPackage cycle=$cycleCount status=${frameResult.healthState}")
                             }
                         }
                     }

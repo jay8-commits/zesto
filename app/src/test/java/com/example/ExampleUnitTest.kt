@@ -521,5 +521,48 @@ class ExampleUnitTest {
         assertNotNull(openMilestone)
         assertTrue(openMilestone!!.message.contains("Camera1"))
     }
+
+    @Test
+    fun testMultiTierIpcComponentsLifecycle() {
+        // Test SharedMemory server init and frame write/read
+        val testBmp = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
+        com.example.zesto.ipc.ZestoSharedMemoryBridge.writeFrame(
+            frameId = 1001L,
+            timestampUs = 5000000L,
+            width = 16,
+            height = 16,
+            bitmap = testBmp,
+            rawBytes = null,
+            isStreaming = true,
+            healthState = "FRAME_ACTIVE"
+        )
+
+        // Test IpcSocketServer frame update
+        com.example.zesto.ipc.ZestoIpcSocketServer.updateFrame(
+            frameId = 1002L,
+            timestampUs = 5000033L,
+            width = 16,
+            height = 16,
+            bitmap = testBmp,
+            rawBuffer = null,
+            sourceMode = com.example.zesto.frame.FrameSourceMode.RTSP,
+            healthState = com.example.zesto.frame.FrameHealthState.FRAME_ACTIVE,
+            isStreaming = true
+        )
+
+        // Test RemoteFrameResult data structure
+        val remoteResult = com.example.zesto.hook.RemoteFrameResult(
+            frameId = 1003L,
+            bitmap = testBmp,
+            width = 1080,
+            height = 1920,
+            healthState = "FRAME_ACTIVE",
+            isStreaming = true
+        )
+        assertEquals(1003L, remoteResult.frameId)
+        assertTrue(remoteResult.isStreaming)
+        assertEquals(1080, remoteResult.width)
+        assertEquals(1920, remoteResult.height)
+    }
 }
 

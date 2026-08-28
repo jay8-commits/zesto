@@ -135,7 +135,6 @@ object ZestoIpcSocketServer {
         val sourceModeByte: Byte = when (sourceMode) {
             FrameSourceMode.RTSP -> 0
             FrameSourceMode.TEST_PATTERN -> 1
-            FrameSourceMode.STATIC_IMAGE -> 2
         }
 
         synchronized(latestFrameLock) {

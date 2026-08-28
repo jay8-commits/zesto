@@ -108,25 +108,29 @@ object ZestoRemoteFrameSource {
         val now = System.currentTimeMillis()
 
         // -------------------------------------------------------------
-        // Tier 1: Direct in-process in-memory bridge check
+        // Tier 1: Direct in-process in-memory bridge check (Host process only)
         // -------------------------------------------------------------
-        val localFrame = ZestoFrameBridge.consumeLatestFrame()
-        if (localFrame.bitmap != null && !localFrame.bitmap.isRecycled) {
-            isProviderAvailable = true
-            consecutiveErrors = 0
-            if (localFrame.frameId == 1L || localFrame.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
-                lastIpcLogMs = now
-                Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height} sourceMode=${localFrame.sourceMode} health=FRAME_INJECTION_ACTIVE transport=IN_PROCESS_BRIDGE")
-                Log.i(TAG, "[IPC_TIER_LOCAL] Direct bridge frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height}")
+        val isHostProcess = attachedPackageName == "com.aistudio.zesto.vcam" || 
+                            attachedPackageName == "com.example.zesto"
+        if (isHostProcess) {
+            val localFrame = ZestoFrameBridge.consumeLatestFrame()
+            if (localFrame.bitmap != null && !localFrame.bitmap.isRecycled && localFrame.sourceMode == com.example.zesto.frame.FrameSourceMode.RTSP) {
+                isProviderAvailable = true
+                consecutiveErrors = 0
+                if (localFrame.frameId == 1L || localFrame.frameId % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
+                    lastIpcLogMs = now
+                    Log.i(TAG, "[REMOTE_FRAME_RECEIVED] package=$attachedPackageName frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height} sourceMode=${localFrame.sourceMode} health=FRAME_INJECTION_ACTIVE transport=IN_PROCESS_BRIDGE")
+                    Log.i(TAG, "[IPC_TIER_LOCAL] Direct bridge frameId=${localFrame.frameId} res=${localFrame.width}x${localFrame.height}")
+                }
+                return RemoteFrameResult(
+                    frameId = localFrame.frameId,
+                    bitmap = localFrame.bitmap,
+                    width = localFrame.width,
+                    height = localFrame.height,
+                    healthState = "FRAME_INJECTION_ACTIVE",
+                    isStreaming = true
+                )
             }
-            return RemoteFrameResult(
-                frameId = localFrame.frameId,
-                bitmap = localFrame.bitmap,
-                width = localFrame.width,
-                height = localFrame.height,
-                healthState = "FRAME_INJECTION_ACTIVE",
-                isStreaming = true
-            )
         }
 
         var candidateHealthState = if (com.example.zesto.ipc.ZestoBinderClient.isConnected()) "BINDER_CONNECTED_WAITING_FRAME" else "BINDER_CONNECTING"

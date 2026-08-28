@@ -127,6 +127,8 @@ object ZestoIpcSocketClient {
 
         val input = dataInput ?: return null
         val output = dataOutput ?: return null
+        val myUid = android.os.Process.myUid()
+        val myPid = android.os.Process.myPid()
 
         try {
             output.writeByte(ZestoIpcSocketServer.CMD_GET_LATEST_FRAME.toInt())

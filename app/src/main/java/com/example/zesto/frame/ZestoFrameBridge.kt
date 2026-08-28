@@ -1,4 +1,3 @@
-```kotlin
 package com.example.zesto.frame
 
 import android.graphics.Bitmap
@@ -863,4 +862,3 @@ object ZestoFrameBridge {
         )
     }
 }
-```

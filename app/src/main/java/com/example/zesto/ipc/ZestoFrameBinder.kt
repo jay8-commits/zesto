@@ -28,14 +28,17 @@ object ZestoFrameBinder {
     const val TRANSACTION_PING = IBinder.FIRST_CALL_TRANSACTION + 3
 
     const val HEADER_MAGIC = 0x5A455354 // "ZEST"
-    const val SHM_SIZE = 4 * 1024 * 1024 // 4 MB
+    const val SHM_SIZE = 8 * 1024 * 1024 // 8 MB
     const val HEADER_RESERVED = 64
-    const val SLOT_SIZE = 2 * 1024 * 1024 - 128 // ~2 MB per slot
+    const val SLOT_SIZE = 4 * 1024 * 1024 - 128 // ~4 MB per slot
 
     private var sharedMemory: SharedMemory? = null
     private var writeBuffer: ByteBuffer? = null
     private var activeSlotIndex = 0
     private val globalSeqCounter = java.util.concurrent.atomic.AtomicLong(10L)
+
+    @Volatile private var latestPublishedFrameId: Long = 0L
+    @Volatile private var latestPublishedSeq: Long = 0L
 
     private val binderInstance = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
@@ -52,7 +55,7 @@ object ZestoFrameBinder {
                     if (shm != null && reply != null) {
                         reply.writeInt(1) // SHM present
                         shm.writeToParcel(reply, 0)
-                        Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] callerUid=$callerUid callerPid=$callerPid size=$SHM_SIZE")
+                        Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] callerUid=$callerUid callerPid=$callerPid size=$SHM_SIZE activeSlot=$activeSlotIndex latestSeq=${globalSeqCounter.get()} latestFrameId=$latestPublishedFrameId")
                     } else {
                         reply?.writeInt(0)
                         Log.w(TAG, "SharedMemory not available to publish to callerUid=$callerUid")
@@ -69,6 +72,8 @@ object ZestoFrameBinder {
                     bundle.putInt("header_magic", HEADER_MAGIC)
                     bundle.putInt("server_uid", Process.myUid())
                     bundle.putInt("server_pid", Process.myPid())
+                    bundle.putLong("latest_frame_id", latestPublishedFrameId)
+                    bundle.putLong("latest_seq", latestPublishedSeq)
                     reply?.writeBundle(bundle)
                     return true
                 }
@@ -89,6 +94,9 @@ object ZestoFrameBinder {
         return binderInstance
     }
 
+    fun getLatestPublishedFrameId(): Long = latestPublishedFrameId
+    fun getLatestPublishedSeq(): Long = latestPublishedSeq
+
     @Synchronized
     fun ensureSharedMemoryInitialized() {
         if (sharedMemory != null && writeBuffer != null) return
@@ -102,6 +110,7 @@ object ZestoFrameBinder {
                 // Initialize header slot pointer to 0
                 buf.position(0)
                 buf.putInt(0)
+                buf.putLong(globalSeqCounter.get())
 
                 sharedMemory = shm
                 writeBuffer = buf
@@ -132,18 +141,18 @@ object ZestoFrameBinder {
         ensureSharedMemoryInitialized()
         val buf = writeBuffer ?: return
 
-        var jpegBytes: ByteArray? = null
-        if (bitmap != null && !bitmap.isRecycled) {
+        val jpegBytes = rawBytes ?: if (bitmap != null && !bitmap.isRecycled) {
             try {
-                val baos = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
-                jpegBytes = baos.toByteArray()
-            } catch (_: Throwable) {}
-        } else if (rawBytes != null) {
-            jpegBytes = rawBytes
-        }
+                val baos = ByteArrayOutputStream(width * height / 4)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+                baos.toByteArray()
+            } catch (_: Throwable) { null }
+        } else null
 
         if (jpegBytes == null || jpegBytes.isEmpty() || jpegBytes.size > (SLOT_SIZE - 256)) {
+            if (jpegBytes != null && jpegBytes.size > (SLOT_SIZE - 256)) {
+                Log.w(TAG, "[SHM_FRAME_DROPPED_OVERSIZED] frameId=$frameId bytes=${jpegBytes.size} max=${SLOT_SIZE - 256}")
+            }
             return
         }
 
@@ -170,9 +179,11 @@ object ZestoFrameBinder {
         buf.putLong(currentSeq)
 
         activeSlotIndex = targetSlot
+        latestPublishedFrameId = frameId
+        latestPublishedSeq = currentSeq
 
-        if (frameId == 1L || frameId % 60L == 0L) {
-            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] frameId=$frameId bytes=$payloadSize res=${width}x${height} slot=$targetSlot seq=$currentSeq")
+        if (frameId == 1L || frameId % 30L == 0L) {
+            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] frameId=$frameId bytes=$payloadSize res=${width}x${height} slot=$targetSlot seq=$currentSeq latestPublishedFrameId=$latestPublishedFrameId latestPublishedSeq=$latestPublishedSeq")
         }
     }
 

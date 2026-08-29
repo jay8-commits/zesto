@@ -2,6 +2,7 @@ package com.example.zesto.frame
 
 import android.graphics.Bitmap
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -495,13 +496,22 @@ object ZestoFrameBridge {
 
         // Broadcast to high-performance Android Binder/SharedMemory, Unix Domain Socket Server, and Shared Memory Bridge
         try {
+            var precompressedJpeg: ByteArray? = buffer
+            if (precompressedJpeg == null && bitmap != null && !bitmap.isRecycled) {
+                try {
+                    val baos = ByteArrayOutputStream(width * height / 4)
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+                    precompressedJpeg = baos.toByteArray()
+                } catch (_: Throwable) {}
+            }
+
             com.example.zesto.ipc.ZestoFrameBinder.writeFrame(
                 frameId = id,
                 timestampUs = timestampUs,
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBytes = buffer,
+                rawBytes = precompressedJpeg,
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
                 healthState = getFrameHealthState().name
             )
@@ -511,7 +521,7 @@ object ZestoFrameBridge {
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBuffer = buffer,
+                rawBuffer = precompressedJpeg,
                 sourceMode = sourceMode,
                 healthState = getFrameHealthState(),
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null
@@ -522,7 +532,7 @@ object ZestoFrameBridge {
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBytes = buffer,
+                rawBytes = precompressedJpeg,
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
                 healthState = getFrameHealthState().name
             )

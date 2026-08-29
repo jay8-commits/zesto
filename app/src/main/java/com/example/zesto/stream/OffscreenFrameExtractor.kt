@@ -104,6 +104,9 @@ class OffscreenFrameExtractor(
     private var pixelBuffer: ByteBuffer? = null
     private var flippedPixelBuffer: ByteBuffer? = null
     private var reusableBitmap: Bitmap? = null
+    private var reusableRowBuffer: ByteArray? = null
+    private val bitmapPool: Array<Bitmap?> = arrayOfNulls(2)
+    private var poolIndex = 0
 
     @Volatile
     private var isInitialized = false
@@ -917,7 +920,11 @@ class OffscreenFrameExtractor(
             flippedBuf.rewind()
 
             val rowStride = width * 4
-            val rowBytes = ByteArray(rowStride)
+            var rowBytes = reusableRowBuffer
+            if (rowBytes == null || rowBytes.size != rowStride) {
+                rowBytes = ByteArray(rowStride)
+                reusableRowBuffer = rowBytes
+            }
             for (y in 0 until height) {
                 pBuf.position((height - 1 - y) * rowStride)
                 pBuf.get(rowBytes, 0, rowStride)
@@ -925,12 +932,23 @@ class OffscreenFrameExtractor(
             }
             flippedBuf.rewind()
 
-            val frameBitmap =
-                Bitmap.createBitmap(
+            val targetSlot = poolIndex % 2
+            val existingBmp = bitmapPool[targetSlot]
+            val frameBitmap = if (existingBmp != null && !existingBmp.isRecycled && existingBmp.width == width && existingBmp.height == height) {
+                existingBmp
+            } else {
+                try {
+                    existingBmp?.recycle()
+                } catch (_: Throwable) {}
+                val newBmp = Bitmap.createBitmap(
                     width,
                     height,
                     Bitmap.Config.ARGB_8888
                 )
+                bitmapPool[targetSlot] = newBmp
+                newBmp
+            }
+            poolIndex++
 
             frameBitmap.copyPixelsFromBuffer(
                 flippedBuf

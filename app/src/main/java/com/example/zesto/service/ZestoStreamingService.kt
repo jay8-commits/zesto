@@ -220,16 +220,20 @@ class ZestoStreamingService : Service() {
             override fun onConsumerAttached(provider: FrameProvider) {}
 
             override fun onFrameAvailable(frame: VideoFrame) {
-                ZestoFrameBridge.postFrame(
-                    width = frame.width,
-                    height = frame.height,
-                    format = frame.pixelFormat,
-                    buffer = frame.buffer?.array(),
-                    bitmap = frame.bitmap,
-                    timestampUs = frame.timestampUs,
-                    sourceMode = frame.sourceMode,
-                    externalFrameId = frame.frameNumber
-                )
+                // RTSP frames are posted directly to ZestoFrameBridge by RTSPPlayerEngine.deliverDecodedFrame().
+                // Only post here for other sources (e.g. TEST_PATTERN) to avoid duplicate posts and wasted CPU cycles.
+                if (frame.sourceMode != com.example.zesto.frame.FrameSourceMode.RTSP) {
+                    ZestoFrameBridge.postFrame(
+                        width = frame.width,
+                        height = frame.height,
+                        format = frame.pixelFormat,
+                        buffer = frame.buffer?.array(),
+                        bitmap = frame.bitmap,
+                        timestampUs = frame.timestampUs,
+                        sourceMode = frame.sourceMode,
+                        externalFrameId = frame.frameNumber
+                    )
+                }
             }
 
             override fun onConsumerDetached() {}

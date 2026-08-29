@@ -31,7 +31,7 @@ object ZestoBinderClient {
 
     private const val HEADER_MAGIC = 0x5A455354 // "ZEST"
     private const val HEADER_RESERVED = 64
-    private const val SLOT_SIZE = 2 * 1024 * 1024 - 128 // ~2 MB
+    private const val SLOT_SIZE = 4 * 1024 * 1024 - 128 // ~4 MB
 
     private val CANDIDATE_PACKAGES = listOf(
         "com.aistudio.zesto.vcam",
@@ -47,6 +47,11 @@ object ZestoBinderClient {
     private var lastSuccessLogMs = 0L
     private var cachedBitmap: Bitmap? = null
     private var cachedFrameId: Long = 0L
+
+    private var clientLastConsumedFrameId: Long = 0L
+    private var clientLastConsumedSeq: Long = 0L
+    private var clientTotalReadsCount: Long = 0L
+    private var clientStaleReadsCount: Long = 0L
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -189,6 +194,7 @@ object ZestoBinderClient {
     /**
      * Reads the latest video frame directly from the mapped SharedMemory buffer.
      */
+    @Synchronized
     fun fetchLatestFrame(context: Context?): RemoteFrameResult? {
         if (!isConnected()) {
             ensureConnected(context)
@@ -198,7 +204,7 @@ object ZestoBinderClient {
         val buf = readBuffer ?: return null
 
         try {
-            // Read active slot index from offset 0
+            // Read active slot index and newest available sequence from offset 0
             buf.position(0)
             val activeSlot = buf.getInt()
             val globalSeq = buf.getLong()
@@ -236,6 +242,12 @@ object ZestoBinderClient {
                 return null
             }
 
+            clientTotalReadsCount++
+            val isNewFrame = (frameId != clientLastConsumedFrameId || headerSeq != clientLastConsumedSeq)
+            if (!isNewFrame) {
+                clientStaleReadsCount++
+            }
+
             var bitmap = cachedBitmap
             if (bitmap == null || bitmap.isRecycled || frameId != cachedFrameId) {
                 try {
@@ -258,10 +270,17 @@ object ZestoBinderClient {
                 return null
             }
 
+            val prevConsumedFrameId = clientLastConsumedFrameId
+            val prevConsumedSeq = clientLastConsumedSeq
+            clientLastConsumedFrameId = frameId
+            clientLastConsumedSeq = headerSeq
+
             val now = System.currentTimeMillis()
-            if (frameId == 1L || frameId % 60L == 0L || (now - lastSuccessLogMs) > 2000L) {
-                lastSuccessLogMs = now
-                Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId res=${width}x${height} bytes=$payloadSize slot=$activeSlot seq=$headerSeq")
+            if (frameId == 1L || frameId % 30L == 0L || isNewFrame || (now - lastSuccessLogMs) > 2000L) {
+                if (isNewFrame || (now - lastSuccessLogMs) > 2000L) {
+                    lastSuccessLogMs = now
+                    Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId res=${width}x${height} bytes=$payloadSize slot=$activeSlot seq=$headerSeq newestAvailableSeq=$globalSeq isNewFrame=$isNewFrame clientPrevFrameId=$prevConsumedFrameId clientPrevSeq=$prevConsumedSeq clientTotalReads=$clientTotalReadsCount clientStaleReads=$clientStaleReadsCount")
+                }
             }
 
             return RemoteFrameResult(

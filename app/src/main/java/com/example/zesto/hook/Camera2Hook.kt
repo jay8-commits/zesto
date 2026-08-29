@@ -560,9 +560,10 @@ object Camera2Hook {
                                     surface.unlockCanvasAndPost(canvas)
                                     lastRenderedFrameId = frameId
                                     val count = substitutedFramesCount.incrementAndGet()
-                                    if (count == 1L || count % 60L == 0L) {
+                                    if (count == 1L || count % 30L == 0L) {
+                                        Log.i(TAG, "[FRAME_RENDER] renderCount=$count frameId=$frameId seq=${frameResult.sequence}")
                                         Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
-                                        val logMsg = "Target preview surface received and posted frame #$count (frameId=$frameId)"
+                                        val logMsg = "Target preview surface received and posted frame #$count (frameId=$frameId seq=${frameResult.sequence})"
                                         Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] $logMsg")
                                         ZestoRemoteFrameSource.reportMilestone("FRAME_POSTED_TO_SURFACE", logMsg)
                                     }

@@ -961,8 +961,12 @@ class OffscreenFrameExtractor(
 
             if (
                 count == 1L ||
-                count % 60L == 0L
+                count % 30L == 0L
             ) {
+                Log.i(
+                    TAG,
+                    "[RTSP_DECODED_FRAME] decoderFrameNumber=$count timestamp=$timestampUs width=$width height=$height"
+                )
                 Log.i(
                     TAG,
                     "[RTSP_FRAME_ORIENTATION] source=TOP_DOWN target=TOP_DOWN verticalFlipApplied=true"

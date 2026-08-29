@@ -1,10 +1,9 @@
 package com.example.zesto.ui
 
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
 import android.util.Log
-import android.view.TextureView
 import androidx.annotation.OptIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -33,16 +32,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import com.example.ui.theme.ElegantDarkBackground
 import com.example.ui.theme.ElegantDarkOnPrimary
@@ -65,7 +67,8 @@ fun PreviewScreen(
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
-    val isLiveVideoActive = (uiState.isDecoding || uiState.isConnected) && uiState.player != null
+    val latestFrame by ZestoFrameBridge.latestFrame.collectAsStateWithLifecycle()
+    val isLiveVideoActive = (uiState.isDecoding || uiState.isConnected) && latestFrame.bitmap != null && !latestFrame.bitmap!!.isRecycled
 
     Column(
         modifier = modifier
@@ -85,43 +88,15 @@ fun PreviewScreen(
                 .testTag("stream_preview_box"),
             contentAlignment = Alignment.Center
         ) {
-            if (isLiveVideoActive) {
-                // Real Live Video Rendering via Hardware-Accelerated TextureView
-                AndroidView(
-                    factory = { context ->
-                        TextureView(context).apply {
-                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                                    uiState.player?.setVideoTextureView(this@apply)
-                                    Log.i("PreviewScreen", "[TEXTURE_SURFACE_AVAILABLE] TextureView attached to ExoPlayer (${width}x${height})")
-                                }
-
-                                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-
-                                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                                    uiState.player?.clearVideoTextureView(this@apply)
-                                    return true
-                                }
-
-                                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-                                    val bmp = bitmap
-                                    if (bmp != null && !bmp.isRecycled) {
-                                        onFrameDecoded?.invoke(bmp, bmp.width, bmp.height)
-                                        val id = ZestoFrameBridge.latestFrame.value.frameId
-                                        if (id == 1L || id % 60L == 0L) {
-                                            Log.i("PreviewScreen", "[ZESTO_PREVIEW_RENDERED] id=$id dimensions=${bmp.width}x${bmp.height}")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    update = { textureView ->
-                        if (uiState.player != null) {
-                            uiState.player?.setVideoTextureView(textureView)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
+            if (isLiveVideoActive && latestFrame.bitmap != null && !latestFrame.bitmap!!.isRecycled) {
+                // Real Live Video Rendering via decoupled Compose Canvas from authoritative frame bridge
+                Image(
+                    bitmap = latestFrame.bitmap!!.asImageBitmap(),
+                    contentDescription = "Live RTSP Decoded Stream Preview",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(24.dp))
                 )
             } else {
                 // Standby Placeholder Visual

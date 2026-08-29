@@ -277,14 +277,15 @@ object ZestoBinderClient {
 
             val now = System.currentTimeMillis()
             if (frameId == 1L || frameId % 30L == 0L || isNewFrame || (now - lastSuccessLogMs) > 2000L) {
-                if (isNewFrame || (now - lastSuccessLogMs) > 2000L) {
+                if (isNewFrame || (now - lastSuccessLogMs) > 2000L || clientTotalReadsCount % 30L == 0L) {
                     lastSuccessLogMs = now
-                    Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId res=${width}x${height} bytes=$payloadSize slot=$activeSlot seq=$headerSeq newestAvailableSeq=$globalSeq isNewFrame=$isNewFrame clientPrevFrameId=$prevConsumedFrameId clientPrevSeq=$prevConsumedSeq clientTotalReads=$clientTotalReadsCount clientStaleReads=$clientStaleReadsCount")
+                    Log.i(TAG, "[FRAME_HANDLE_READ] readCount=$clientTotalReadsCount frameId=$frameId seq=$headerSeq isNewFrame=$isNewFrame (slot=$activeSlot bytes=$payloadSize res=${width}x${height} newestSeq=$globalSeq staleReads=$clientStaleReadsCount)")
                 }
             }
 
             return RemoteFrameResult(
                 frameId = frameId,
+                sequence = headerSeq,
                 bitmap = bitmap,
                 width = width,
                 height = height,

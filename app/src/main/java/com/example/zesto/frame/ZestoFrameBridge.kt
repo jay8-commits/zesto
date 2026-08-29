@@ -470,6 +470,10 @@ object ZestoFrameBridge {
             }
         }
 
+        if (id == 1L || id % 30L == 0L) {
+            Log.i(TAG, "[FRAME_BRIDGE_RECEIVED] decoderFrameNumber=${externalFrameId ?: id} frameId=$id width=$width height=$height sourceMode=$sourceMode")
+        }
+
         /*
          * IMPORTANT:
          *

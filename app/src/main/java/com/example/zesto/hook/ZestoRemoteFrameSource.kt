@@ -17,6 +17,7 @@ import com.example.zesto.ipc.ZestoSharedMemoryBridge
  */
 data class RemoteFrameResult(
     val frameId: Long = 0L,
+    val sequence: Long = 0L,
     val bitmap: Bitmap? = null,
     val width: Int = 1080,
     val height: Int = 1920,

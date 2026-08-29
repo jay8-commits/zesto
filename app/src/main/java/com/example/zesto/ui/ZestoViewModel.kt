@@ -81,17 +81,19 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         override fun onConsumerAttached(provider: FrameProvider) {}
 
         override fun onFrameAvailable(frame: VideoFrame) {
-            ZestoFrameBridge.postFrame(
-                width = frame.width,
-                height = frame.height,
-                format = frame.pixelFormat,
-                buffer = frame.buffer?.array(),
-                bitmap = frame.bitmap,
-                timestampUs = frame.timestampUs,
-                sourceMode = frame.sourceMode,
-                externalFrameId = frame.frameNumber
-            )
-            diagnosticsManager.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED)
+            if (frame.sourceMode != com.example.zesto.frame.FrameSourceMode.RTSP) {
+                ZestoFrameBridge.postFrame(
+                    width = frame.width,
+                    height = frame.height,
+                    format = frame.pixelFormat,
+                    buffer = frame.buffer?.array(),
+                    bitmap = frame.bitmap,
+                    timestampUs = frame.timestampUs,
+                    sourceMode = frame.sourceMode,
+                    externalFrameId = frame.frameNumber
+                )
+                diagnosticsManager.recordBoundaryStage(com.example.zesto.diagnostics.BoundaryDiagnosticStage.FRAME_BRIDGE_POSTED)
+            }
         }
 
         override fun onConsumerDetached() {}

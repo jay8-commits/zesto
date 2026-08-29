@@ -37,6 +37,8 @@ object ZestoFrameBinder {
     private var activeSlotIndex = 0
     private val globalSeqCounter = java.util.concurrent.atomic.AtomicLong(10L)
 
+    private val publishCounter = java.util.concurrent.atomic.AtomicLong(0L)
+
     @Volatile private var latestPublishedFrameId: Long = 0L
     @Volatile private var latestPublishedSeq: Long = 0L
 
@@ -181,9 +183,10 @@ object ZestoFrameBinder {
         activeSlotIndex = targetSlot
         latestPublishedFrameId = frameId
         latestPublishedSeq = currentSeq
+        val pubCount = publishCounter.incrementAndGet()
 
-        if (frameId == 1L || frameId % 30L == 0L) {
-            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] frameId=$frameId bytes=$payloadSize res=${width}x${height} slot=$targetSlot seq=$currentSeq latestPublishedFrameId=$latestPublishedFrameId latestPublishedSeq=$latestPublishedSeq")
+        if (pubCount == 1L || pubCount % 30L == 0L || frameId == 1L || frameId % 30L == 0L) {
+            Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] publishCount=$pubCount frameId=$frameId seq=$currentSeq activeSlot=$targetSlot bytes=$payloadSize res=${width}x${height} latestPublishedFrameId=$latestPublishedFrameId latestPublishedSeq=$latestPublishedSeq")
         }
     }
 

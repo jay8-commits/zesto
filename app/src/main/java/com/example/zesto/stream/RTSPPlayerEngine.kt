@@ -1049,10 +1049,13 @@ class RTSPPlayerEngine(
                         forceTcp
                     )
                     .setTimeoutMs(
-                        config.connectionTimeoutMs
+                        config.connectionTimeoutMs.coerceAtLeast(15_000L)
                     )
                     .setUserAgent(
-                        "Zesto/1.0 (Android Systems Pipeline)"
+                        "Zesto/1.0 (Android Systems Pipeline; Live Stream)"
+                    )
+                    .setForceUseRtpTcp(
+                        forceTcp || true // Prefer TCP interleaved for cross-app stability
                     )
                     .createMediaSource(
                         mediaItem

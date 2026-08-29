@@ -239,7 +239,11 @@ object ZestoBinderClient {
             var bitmap = cachedBitmap
             if (bitmap == null || bitmap.isRecycled || frameId != cachedFrameId) {
                 try {
-                    val decoded = BitmapFactory.decodeByteArray(payload, 0, payloadSize)
+                    val opts = BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                        inSampleSize = 1
+                    }
+                    val decoded = BitmapFactory.decodeByteArray(payload, 0, payloadSize, opts)
                     if (decoded != null) {
                         bitmap = decoded
                         cachedBitmap = decoded

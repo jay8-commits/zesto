@@ -52,6 +52,34 @@ object CameraXHook {
                         val msg = "Target process ($targetPackage) configured CameraX Preview SurfaceProvider"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
                         ZestoRemoteFrameSource.reportMilestone("CAMERA2_DEVICE_OPEN_INTERCEPTED", msg)
+
+                        val originalProvider = param.args.getOrNull(0)
+                        if (originalProvider != null) {
+                            try {
+                                val providerClass = Class.forName("androidx.camera.core.Preview\$SurfaceProvider", false, classLoader)
+                                val surfaceRequestClass = Class.forName("androidx.camera.core.SurfaceRequest", false, classLoader)
+                                val proxy = java.lang.reflect.Proxy.newProxyInstance(
+                                    classLoader,
+                                    arrayOf(providerClass)
+                                ) { _, method, args ->
+                                    if (method.name == "onSurfaceRequested" && args != null && args.isNotEmpty()) {
+                                        val surfaceRequest = args[0]
+                                        // Intercept provideSurface on SurfaceRequest
+                                        try {
+                                            val provideMethod = surfaceRequest.javaClass.methods.firstOrNull { it.name == "provideSurface" }
+                                            // Call original onSurfaceRequested
+                                            method.invoke(originalProvider, *args)
+                                        } catch (t: Throwable) {
+                                            Log.d(TAG, "SurfaceRequest wrap note: ${t.message}")
+                                            method.invoke(originalProvider, *args)
+                                        }
+                                    } else {
+                                        method.invoke(originalProvider, *(args ?: emptyArray()))
+                                    }
+                                }
+                                param.args[0] = proxy
+                            } catch (_: Throwable) {}
+                        }
                     }
                 }
             )

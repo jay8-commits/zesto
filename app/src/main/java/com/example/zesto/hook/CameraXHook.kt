@@ -141,6 +141,7 @@ object CameraXHook {
             val hash = System.identityHashCode(surface).toString(16)
 
             while (isPumping.get() && surface.isValid) {
+                val cycleStartTime = System.currentTimeMillis()
                 try {
                     val frameResult = ZestoRemoteFrameSource.fetchLatestFrame()
                     val bitmap = frameResult.bitmap
@@ -187,7 +188,10 @@ object CameraXHook {
                             }
                         }
                     }
-                    Thread.sleep(33L)
+                    // Low-latency adaptive sleep: measure actual render duration
+                    val elapsed = System.currentTimeMillis() - cycleStartTime
+                    val sleepMs = (33L - elapsed).coerceIn(2L, 33L)
+                    Thread.sleep(sleepMs)
                 } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {

@@ -817,6 +817,38 @@ class RTSPPlayerEngine(
                             )
                     }
 
+                    override fun onPlayWhenReadyChanged(
+                        playWhenReady: Boolean,
+                        reason: Int
+                    ) {
+                        val reasonStr = when (reason) {
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "USER_REQUEST"
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "AUDIO_BECOMING_NOISY"
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "REMOTE"
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM -> "END_OF_MEDIA_ITEM"
+                            Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG -> "SUPPRESSED_TOO_LONG"
+                            else -> "UNKNOWN($reason)"
+                        }
+                        Log.i(TAG, "[PLAYER_STATE] playWhenReady=$playWhenReady reason=$reasonStr")
+                    }
+
+                    override fun onPlaybackSuppressionReasonChanged(
+                        playbackSuppressionReason: Int
+                    ) {
+                        val reasonStr = when (playbackSuppressionReason) {
+                            Player.PLAYBACK_SUPPRESSION_REASON_NONE -> "NONE"
+                            Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS -> "TRANSIENT_AUDIO_FOCUS_LOSS"
+                            Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT -> "UNSUITABLE_AUDIO_OUTPUT"
+                            else -> "UNKNOWN($playbackSuppressionReason)"
+                        }
+                        Log.i(TAG, "[PLAYER_STATE] playbackSuppressionReason=$reasonStr")
+                    }
+
+                    override fun onSurfaceSizeChanged(width: Int, height: Int) {
+                        Log.i(TAG, "[PLAYER_STATE] surfaceSizeChanged=${width}x${height}")
+                    }
+
                     override fun onPlayerError(
                         error: PlaybackException
                     ) {
@@ -924,15 +956,45 @@ class RTSPPlayerEngine(
                             )
                     }
 
+                    override fun onVideoInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: androidx.media3.common.Format,
+                        decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
+                    ) {
+                        Log.i(
+                            TAG,
+                            "[DECODER_STATE] videoInputFormatChanged: mime=${format.sampleMimeType} " +
+                                "res=${format.width}x${format.height}@${format.frameRate}fps " +
+                                "codecs=${format.codecs} bitrate=${format.bitrate}"
+                        )
+                    }
+
+                    override fun onVideoCodecError(
+                        eventTime: AnalyticsListener.EventTime,
+                        videoCodecError: Exception
+                    ) {
+                        Log.e(TAG, "[DECODER_STATE] videoCodecError: ${videoCodecError.message}", videoCodecError)
+                    }
+
+                    override fun onAudioCodecError(
+                        eventTime: AnalyticsListener.EventTime,
+                        audioCodecError: Exception
+                    ) {
+                        Log.e(TAG, "[DECODER_STATE] audioCodecError: ${audioCodecError.message}", audioCodecError)
+                    }
+
                     override fun onVideoFrameProcessingOffset(
                         eventTime:
                             AnalyticsListener.EventTime,
                         totalProcessingOffsetUs: Long,
                         frameCount: Int
                     ) {
-                        /*
-                         * Diagnostic telemetry only.
-                         */
+                        if (frameCount == 1 || frameCount % 30 == 0) {
+                            Log.i(
+                                TAG,
+                                "[MEDIACODEC_OUTPUT] status=OFFSET_REPORT frameCount=$frameCount totalProcessingOffsetUs=$totalProcessingOffsetUs"
+                            )
+                        }
                     }
                 }
             )
@@ -1417,6 +1479,33 @@ class RTSPPlayerEngine(
                     } else {
                         0L
                     }
+            )
+        }
+
+        // Periodic telemetry rate-limited to metrics interval
+        val pState = when (playerInstance?.playbackState) {
+            Player.STATE_IDLE -> "IDLE"
+            Player.STATE_BUFFERING -> "BUFFERING"
+            Player.STATE_READY -> "READY"
+            Player.STATE_ENDED -> "ENDED"
+            else -> "UNKNOWN"
+        }
+        val pwr = playerInstance?.playWhenReady == true
+        val surfValid = internalSurface?.isValid == true
+        val health = offscreenFrameExtractor?.getHealthInfo()
+
+        Log.i(
+            TAG,
+            "[PLAYER_STATE] state=$pState isPlaying=$isActuallyPlaying playWhenReady=$pwr videoSurfaceAttached=$surfValid renderedFrames=$rendered droppedFrames=$dropped errors=$errors"
+        )
+
+        if (health != null) {
+            Log.i(
+                TAG,
+                "[EXTRACTOR_HEALTH] threadAlive=${health.threadAlive} surfaceValid=${health.surfaceValid} " +
+                    "surfaceTextureValid=${health.surfaceTextureValid} cbCount=${health.callbackCount} " +
+                    "procCount=${health.processCount} frameCount=${health.frameCount} " +
+                    "lastFrameAgeMs=${health.lastCallbackAgeMs} lastProcessAgeMs=${health.lastProcessAgeMs}"
             )
         }
     }

@@ -115,6 +115,10 @@ class OffscreenFrameExtractor(
     private var isReleased = false
 
     private var frameCount = 0L
+    private val surfaceTextureCallbackCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private var processCount = 0L
+    @Volatile private var lastCallbackTimestampMs = 0L
+    @Volatile private var lastProcessTimestampMs = 0L
 
     init {
         initGlThread()
@@ -462,10 +466,19 @@ class OffscreenFrameExtractor(
             )
 
             setOnFrameAvailableListener(
-                {
+                { stListener ->
+                    val cb = surfaceTextureCallbackCount.incrementAndGet()
+                    lastCallbackTimestampMs = System.currentTimeMillis()
+                    val ts = try { stListener?.timestamp ?: 0L } catch (_: Throwable) { 0L }
+                    if (cb == 1L || cb % 30L == 0L) {
+                        Log.i(TAG, "[SURFACE_TEXTURE_FRAME] callbackCount=$cb timestamp=$ts threadAlive=${glThread?.isAlive} isReleased=$isReleased")
+                    }
                     if (!isReleased) {
-                        glHandler?.post {
+                        val posted = glHandler?.post {
                             processFrame()
+                        }
+                        if (posted != true && (cb == 1L || cb % 30L == 0L)) {
+                            Log.w(TAG, "[SURFACE_TEXTURE_FRAME] Warning: glHandler post returned false")
                         }
                     }
                 },
@@ -750,7 +763,16 @@ class OffscreenFrameExtractor(
             val st = surfaceTexture
                 ?: return
 
-            st.updateTexImage()
+            val pCount = ++processCount
+            lastProcessTimestampMs = System.currentTimeMillis()
+
+            try {
+                st.updateTexImage()
+            } catch (e: Throwable) {
+                Log.w(TAG, "[EXTRACTOR_PROCESS_ERROR] updateTexImage failed: ${e.message}", e)
+                return
+            }
+
             st.getTransformMatrix(
                 stMatrix
             )
@@ -963,6 +985,10 @@ class OffscreenFrameExtractor(
                 count == 1L ||
                 count % 30L == 0L
             ) {
+                Log.i(
+                    TAG,
+                    "[EXTRACTOR_PROCESS] processCount=$pCount timestamp=$timestampUs decoderFrameNumber=$count"
+                )
                 Log.i(
                     TAG,
                     "[RTSP_DECODED_FRAME] decoderFrameNumber=$count timestamp=$timestampUs width=$width height=$height"
@@ -1180,5 +1206,34 @@ class OffscreenFrameExtractor(
                 glHandler = null
             }
         }
+    }
+
+    data class ExtractorHealthInfo(
+        val threadAlive: Boolean,
+        val surfaceValid: Boolean,
+        val surfaceTextureValid: Boolean,
+        val callbackCount: Long,
+        val processCount: Long,
+        val frameCount: Long,
+        val lastCallbackAgeMs: Long,
+        val lastProcessAgeMs: Long,
+        val isReleased: Boolean
+    )
+
+    fun getHealthInfo(): ExtractorHealthInfo {
+        val now = System.currentTimeMillis()
+        val lastCb = lastCallbackTimestampMs
+        val lastProc = lastProcessTimestampMs
+        return ExtractorHealthInfo(
+            threadAlive = glThread?.isAlive == true,
+            surfaceValid = outputSurface?.isValid == true,
+            surfaceTextureValid = surfaceTexture != null,
+            callbackCount = surfaceTextureCallbackCount.get(),
+            processCount = processCount,
+            frameCount = frameCount,
+            lastCallbackAgeMs = if (lastCb > 0) now - lastCb else -1L,
+            lastProcessAgeMs = if (lastProc > 0) now - lastProc else -1L,
+            isReleased = isReleased
+        )
     }
 }

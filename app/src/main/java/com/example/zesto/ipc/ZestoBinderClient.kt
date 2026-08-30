@@ -232,6 +232,29 @@ object ZestoBinderClient {
                 return null
             }
 
+            clientTotalReadsCount++
+            val isNewFrame = (frameId != clientLastConsumedFrameId || headerSeq != clientLastConsumedSeq)
+
+            var bitmap = cachedBitmap
+            if (!isNewFrame && bitmap != null && !bitmap.isRecycled) {
+                clientStaleReadsCount++
+                val now = System.currentTimeMillis()
+                if (now - lastSuccessLogMs > 2000L || clientTotalReadsCount % 60L == 0L) {
+                    lastSuccessLogMs = now
+                    Log.i(TAG, "[FRAME_HANDLE_READ] readCount=$clientTotalReadsCount frameId=$frameId seq=$headerSeq isNewFrame=false (slot=$activeSlot bytes=$payloadSize res=${width}x${height} newestSeq=$globalSeq staleReads=$clientStaleReadsCount)")
+                }
+                return RemoteFrameResult(
+                    frameId = frameId,
+                    sequence = headerSeq,
+                    isNewFrame = false,
+                    bitmap = bitmap,
+                    width = width,
+                    height = height,
+                    healthState = "FRAME_INJECTION_ACTIVE",
+                    isStreaming = isStreamingInt == 1
+                )
+            }
+
             val payload = ByteArray(payloadSize)
             buf.get(payload)
 
@@ -242,13 +265,6 @@ object ZestoBinderClient {
                 return null
             }
 
-            clientTotalReadsCount++
-            val isNewFrame = (frameId != clientLastConsumedFrameId || headerSeq != clientLastConsumedSeq)
-            if (!isNewFrame) {
-                clientStaleReadsCount++
-            }
-
-            var bitmap = cachedBitmap
             if (bitmap == null || bitmap.isRecycled || frameId != cachedFrameId) {
                 try {
                     val opts = BitmapFactory.Options().apply {
@@ -270,22 +286,19 @@ object ZestoBinderClient {
                 return null
             }
 
-            val prevConsumedFrameId = clientLastConsumedFrameId
-            val prevConsumedSeq = clientLastConsumedSeq
             clientLastConsumedFrameId = frameId
             clientLastConsumedSeq = headerSeq
 
             val now = System.currentTimeMillis()
             if (frameId == 1L || frameId % 30L == 0L || isNewFrame || (now - lastSuccessLogMs) > 2000L) {
-                if (isNewFrame || (now - lastSuccessLogMs) > 2000L || clientTotalReadsCount % 30L == 0L) {
-                    lastSuccessLogMs = now
-                    Log.i(TAG, "[FRAME_HANDLE_READ] readCount=$clientTotalReadsCount frameId=$frameId seq=$headerSeq isNewFrame=$isNewFrame (slot=$activeSlot bytes=$payloadSize res=${width}x${height} newestSeq=$globalSeq staleReads=$clientStaleReadsCount)")
-                }
+                lastSuccessLogMs = now
+                Log.i(TAG, "[FRAME_HANDLE_READ] readCount=$clientTotalReadsCount frameId=$frameId seq=$headerSeq isNewFrame=true (slot=$activeSlot bytes=$payloadSize res=${width}x${height} newestSeq=$globalSeq staleReads=$clientStaleReadsCount)")
             }
 
             return RemoteFrameResult(
                 frameId = frameId,
                 sequence = headerSeq,
+                isNewFrame = true,
                 bitmap = bitmap,
                 width = width,
                 height = height,

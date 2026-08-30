@@ -29,7 +29,6 @@ import com.example.zesto.stream.StreamConfig
 import com.example.zesto.stream.StreamReceiver
 import com.example.zesto.stream.StreamState
 import com.example.zesto.stream.TransportProtocol
-import com.example.zesto.stream.ZestoStreamEngineManager
 import com.example.zesto.target.CompatibilityManager
 import com.example.zesto.target.TargetProfile
 import com.example.zesto.testtarget.ControlledCameraTestActivity
@@ -43,11 +42,20 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferences = ZestoPreferences(application)
 
-    val rtspPlayerEngine: RTSPPlayerEngine
-        get() = ZestoStreamEngineManager.getEngine()
+    val rtspPlayerEngine =
+        com.example.zesto.stream.ZestoStreamEngineManager.getEngine(application)
 
-    val framePipeline: FramePipeline
-        get() = ZestoStreamEngineManager.framePipeline
+    private val rtspTransport = RTSPTransport()
+
+    val streamReceiver = StreamReceiver(
+        transport = rtspTransport
+    )
+
+    val videoDecoder: VideoDecoder =
+        HardwareVideoDecoder()
+
+    val framePipeline =
+        FramePipeline()
 
     private val cameraDetector =
         CameraApiDetector(application)
@@ -55,8 +63,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     val compatibilityManager =
         CompatibilityManager()
 
-    val diagnosticsManager: DiagnosticsManager
-        get() = ZestoStreamEngineManager.diagnosticsManager
+    val diagnosticsManager =
+        DiagnosticsManager()
 
     private var activeBackend:
         CameraVirtualizationBackend? = null
@@ -97,7 +105,6 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        ZestoStreamEngineManager.initialize(application)
 
         val initialConfig =
             preferences.loadStreamConfig()
@@ -155,43 +162,25 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
             "Zesto Authoritative RTSP Stream & Virtualization Pipeline Initialized"
         )
 
+        /*
+         * Wire RTSPPlayerEngine real hardware frames -> FramePipeline -> ZestoFrameBridge / Backends
+         */
+        var frameHandoffCount = 0L
+        rtspPlayerEngine.setFrameListener { frame ->
+            framePipeline.pushFrame(frame)
+            frameHandoffCount++
+            if (frameHandoffCount == 1L || frameHandoffCount % 150L == 0L) {
+                diagnosticsManager.logger.debug(
+                    Subsystem.FRAME_PIPELINE,
+                    "Frame #${frame.frameNumber} (${frame.width}x${frame.height}) delivered to ${framePipeline.getActiveConsumerCount()} active consumers"
+                )
+            }
+        }
+
         observeSubsystems()
     }
 
     private fun observeSubsystems() {
-
-        viewModelScope.launch {
-            ZestoStreamEngineManager.lifecycleState.collect { lState ->
-                val connecting = lState == com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTING ||
-                        lState == com.example.zesto.stream.ZestoEngineLifecycleState.RECONNECTING
-                val connected = lState == com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTED ||
-                        lState == com.example.zesto.stream.ZestoEngineLifecycleState.RUNNING
-                val decoding = lState == com.example.zesto.stream.ZestoEngineLifecycleState.RUNNING
-
-                _uiState.update {
-                    it.copy(
-                        lifecycleState = lState,
-                        isConnecting = connecting,
-                        isConnected = connected,
-                        isDecoding = decoding || it.isDecoding,
-                        player = rtspPlayerEngine.player
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            ZestoStreamEngineManager.injectionState.collect { injState ->
-                val virtualActive = injState == com.example.zesto.stream.VirtualInjectionState.INJECTION_CONFIRMED ||
-                        injState == com.example.zesto.stream.VirtualInjectionState.INJECTION_ATTEMPTED
-                _uiState.update {
-                    it.copy(
-                        injectionState = injState,
-                        isVirtualFeedActive = virtualActive
-                    )
-                }
-            }
-        }
 
         viewModelScope.launch {
 
@@ -207,7 +196,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
 
                     it.copy(
-                        isConnected = connected || it.isConnected,
+                        isConnected = connected,
                         isConnecting = connecting,
                         isDecoding =
                             connected || it.isDecoding
@@ -244,7 +233,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
                 _uiState.update {
                     it.copy(
-                        isDecoding = running || it.isDecoding
+                        isDecoding = running
                     )
                 }
 
@@ -471,78 +460,154 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Master coordinated connect action triggered from UI.
-     */
-    fun connect() {
-        val config = _uiState.value.streamConfig
+    fun connectStream() {
+
+        val config =
+            _uiState.value.streamConfig
+
         viewModelScope.launch {
-            ZestoStreamEngineManager.connect(getApplication(), config)
+
+            diagnosticsManager.logger.info(
+                Subsystem.TRANSPORT,
+                "Initiating real RTSP stream from ${config.url}"
+            )
+
+            framePipeline.start()
+
+            // Start the authoritative Foreground Streaming Service
+            com.example.zesto.service.ZestoStreamingService.startStreaming(
+                getApplication(),
+                config
+            )
+
             _uiState.update {
                 it.copy(
-                    player = rtspPlayerEngine.player
+                    player =
+                        rtspPlayerEngine.player
                 )
             }
-        }
-    }
 
-    /**
-     * Master coordinated disconnect action triggered from UI.
-     */
-    fun disconnect() {
-        viewModelScope.launch {
-            ZestoStreamEngineManager.disconnect(getApplication())
+            diagnosticsManager.logger.info(
+                Subsystem.FRAME_PIPELINE,
+                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
+            )
         }
-    }
-
-    fun connectStream() {
-        connect()
     }
 
     fun disconnectStream() {
-        disconnect()
+
+        viewModelScope.launch {
+
+            diagnosticsManager.logger.info(
+                Subsystem.TRANSPORT,
+                "Disconnecting RTSP stream"
+            )
+
+            // Stop the authoritative Foreground Streaming Service
+            com.example.zesto.service.ZestoStreamingService.stopStreaming(
+                getApplication()
+            )
+
+            streamReceiver.stop()
+
+            stopDecoderAndPipeline()
+        }
     }
 
     fun startDecoderAndPipeline() {
-        connect()
+
+        viewModelScope.launch {
+
+            val config =
+                _uiState.value.streamConfig
+
+            diagnosticsManager.logger.info(
+                Subsystem.DECODER,
+                "Starting hardware decoder and stream ingestion at " +
+                    "${config.targetWidth}x${config.targetHeight}"
+            )
+
+            framePipeline.start()
+
+            rtspPlayerEngine.startStream(
+                config
+            )
+
+            _uiState.update {
+                it.copy(
+                    player =
+                        rtspPlayerEngine.player
+                )
+            }
+
+            diagnosticsManager.logger.info(
+                Subsystem.FRAME_PIPELINE,
+                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
+            )
+        }
     }
 
     fun stopDecoderAndPipeline() {
-        disconnect()
+
+        viewModelScope.launch {
+
+            rtspPlayerEngine.stopStream()
+
+            framePipeline.stop()
+
+            diagnosticsManager.logger.info(
+                Subsystem.DECODER,
+                "Decoder and pipeline stopped"
+            )
+        }
     }
 
     fun startBackgroundService(
         context: Context
     ) {
-        connect()
+
+        val config =
+            _uiState.value.streamConfig
+
+        ZestoStreamingService.startStreaming(
+            context,
+            config
+        )
+
         _uiState.update {
             it.copy(
-                userNoticeMessage = "Zesto Stream Pipeline & Service connected"
+                isServiceRunning = true,
+                userNoticeMessage =
+                    "Background streaming service started"
             )
         }
+
+        diagnosticsManager.logger.info(
+            Subsystem.SYSTEM,
+            "Foreground streaming service started"
+        )
     }
 
     fun stopBackgroundService(
         context: Context
     ) {
-        disconnect()
+
+        ZestoStreamingService.stopStreaming(
+            context
+        )
+
         _uiState.update {
             it.copy(
-                userNoticeMessage = "Zesto Stream Pipeline & Service stopped"
+                isServiceRunning = false,
+                userNoticeMessage =
+                    "Background streaming service stopped"
             )
         }
-    }
 
-    fun startTestHarness() {
-        connect()
-    }
-
-    fun startInjection() {
-        connect()
-    }
-
-    fun stopInjection() {
-        disconnect()
+        diagnosticsManager.logger.info(
+            Subsystem.SYSTEM,
+            "Foreground streaming service stopped"
+        )
     }
 
     fun launchControlledTarget(
@@ -677,8 +742,22 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        // UI ViewModel cleared should NOT destroy background streaming service or manager
-        // Preserves continuous stream for target injected apps
+
+        /*
+         * Note: rtspPlayerEngine is managed authoritatively by ZestoStreamEngineManager
+         * and ZestoStreamingService so background streaming continues when UI is backgrounded.
+         */
+
+        /*
+         * VideoDecoder cleanup.
+         */
+        videoDecoder.stop()
+
+        framePipeline.unregisterAll()
+        framePipeline.stop()
+
+        activeBackend?.release()
+
         super.onCleared()
     }
 }

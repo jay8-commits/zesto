@@ -158,18 +158,18 @@ object ZestoIpcSocketServer {
             startServer()
         }
 
-        var jpegBytes: ByteArray? = null
-        if (bitmap != null && !bitmap.isRecycled) {
+        var jpegBytes: ByteArray? = if (rawBuffer != null && rawBuffer.isNotEmpty()) {
+            rawBuffer
+        } else if (bitmap != null && !bitmap.isRecycled) {
             try {
                 val baos = ByteArrayOutputStream(width * height / 4)
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
-                jpegBytes = baos.toByteArray()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+                baos.toByteArray()
             } catch (e: Throwable) {
                 Log.w(TAG, "Error compressing IPC frame: ${e.message}")
+                null
             }
-        } else if (rawBuffer != null && rawBuffer.isNotEmpty()) {
-            jpegBytes = rawBuffer
-        }
+        } else null
 
         val healthByte: Byte = when (healthState) {
             FrameHealthState.NO_FRAME -> 0

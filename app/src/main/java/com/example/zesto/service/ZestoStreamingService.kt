@@ -24,7 +24,6 @@ import com.example.zesto.frame.ZestoFrameBridge
 import com.example.zesto.stream.RTSPPlayerEngine
 import com.example.zesto.stream.StreamConfig
 import com.example.zesto.stream.StreamState
-import com.example.zesto.stream.ZestoStreamEngineManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -163,8 +162,15 @@ class ZestoStreamingService : Service() {
                 Dispatchers.Main
         )
 
-    private val playerEngine: RTSPPlayerEngine
-        get() = ZestoStreamEngineManager.getEngine()
+    private lateinit var playerEngine:
+        RTSPPlayerEngine
+
+    private val videoDecoder:
+        VideoDecoder =
+        HardwareVideoDecoder()
+
+    private val framePipeline =
+        FramePipeline()
 
     private val _isRunning =
         MutableStateFlow(false)
@@ -200,7 +206,45 @@ class ZestoStreamingService : Service() {
 
         createNotificationChannel()
 
-        ZestoStreamEngineManager.initialize(applicationContext)
+        playerEngine =
+            com.example.zesto.stream.ZestoStreamEngineManager.getEngine(
+                applicationContext
+            )
+
+        // Register default BridgeFrameConsumer so FramePipeline is always active and delivering to ZestoFrameBridge
+        val bridgeConsumer = object : FrameConsumer {
+            override val consumerId: String = "service_bridge_consumer"
+            override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
+
+            override fun onConsumerAttached(provider: FrameProvider) {}
+
+            override fun onFrameAvailable(frame: VideoFrame) {
+                // RTSP frames are posted directly to ZestoFrameBridge by RTSPPlayerEngine.deliverDecodedFrame().
+                // Only post here for other sources (e.g. TEST_PATTERN) to avoid duplicate posts and wasted CPU cycles.
+                if (frame.sourceMode != com.example.zesto.frame.FrameSourceMode.RTSP) {
+                    ZestoFrameBridge.postFrame(
+                        width = frame.width,
+                        height = frame.height,
+                        format = frame.pixelFormat,
+                        buffer = frame.buffer?.array(),
+                        bitmap = frame.bitmap,
+                        timestampUs = frame.timestampUs,
+                        sourceMode = frame.sourceMode,
+                        externalFrameId = frame.frameNumber
+                    )
+                }
+            }
+
+            override fun onConsumerDetached() {}
+        }
+        framePipeline.registerConsumer(bridgeConsumer)
+
+        // Forward frames from RTSPPlayerEngine directly into FramePipeline
+        playerEngine.setFrameListener { frame ->
+            framePipeline.pushFrame(frame)
+        }
+
+        framePipeline.start()
 
         ZestoFrameBridge.setProviderRunning(true)
         ZestoFrameBridge.setBridgeReady(true)
@@ -220,46 +264,72 @@ class ZestoStreamingService : Service() {
         playerStateJob =
             serviceScope.launch {
 
-                launch {
-                    ZestoStreamEngineManager.lifecycleState.collect { lState ->
-                        when (lState) {
-                            com.example.zesto.stream.ZestoEngineLifecycleState.RUNNING -> {
-                                _runtimeState.value = ServiceRuntimeState.STREAM_ACTIVE_IN_BACKGROUND
-                                _globalServiceState.value = ServiceRuntimeState.STREAM_ACTIVE_IN_BACKGROUND
-                                _isRunning.value = true
-                            }
-                            com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTED -> {
-                                _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
-                                _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
-                                _isRunning.value = true
-                            }
-                            com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTING -> {
-                                _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
-                                _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
-                                _isRunning.value = true
-                            }
-                            com.example.zesto.stream.ZestoEngineLifecycleState.RECONNECTING -> {
-                                _runtimeState.value = ServiceRuntimeState.STREAM_INTERRUPTED
-                                _globalServiceState.value = ServiceRuntimeState.STREAM_INTERRUPTED
-                            }
-                            com.example.zesto.stream.ZestoEngineLifecycleState.ERROR -> {
-                                _runtimeState.value = ServiceRuntimeState.STREAM_INTERRUPTED
-                                _globalServiceState.value = ServiceRuntimeState.STREAM_INTERRUPTED
-                            }
-                            com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED,
-                            com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTING -> {
-                                _runtimeState.value = ServiceRuntimeState.SERVICE_STOPPED
-                                _globalServiceState.value = ServiceRuntimeState.SERVICE_STOPPED
-                                _isRunning.value = false
+                playerEngine.streamState.collect { state ->
+
+                    when (state) {
+
+                        is StreamState.Connected -> {
+
+                            _runtimeState.value =
+                                ServiceRuntimeState
+                                    .STREAM_ACTIVE_IN_BACKGROUND
+
+                            _globalServiceState.value =
+                                ServiceRuntimeState
+                                    .STREAM_ACTIVE_IN_BACKGROUND
+                        }
+
+                        is StreamState.Reconnecting -> {
+
+                            _runtimeState.value =
+                                ServiceRuntimeState
+                                    .STREAM_INTERRUPTED
+
+                            _globalServiceState.value =
+                                ServiceRuntimeState
+                                    .STREAM_INTERRUPTED
+                        }
+
+                        is StreamState.Error -> {
+
+                            _runtimeState.value =
+                                ServiceRuntimeState
+                                    .STREAM_INTERRUPTED
+
+                            _globalServiceState.value =
+                                ServiceRuntimeState
+                                    .STREAM_INTERRUPTED
+                        }
+
+                        is StreamState.Connecting -> {
+
+                            _runtimeState.value =
+                                ServiceRuntimeState
+                                    .SERVICE_RUNNING
+
+                            _globalServiceState.value =
+                                ServiceRuntimeState
+                                    .SERVICE_RUNNING
+                        }
+
+                        is StreamState.Disconnected -> {
+
+                            if (_isRunning.value) {
+
+                                _runtimeState.value =
+                                    ServiceRuntimeState
+                                        .SERVICE_RUNNING
+
+                                _globalServiceState.value =
+                                    ServiceRuntimeState
+                                        .SERVICE_RUNNING
                             }
                         }
                     }
-                }
 
-                launch {
-                    ZestoStreamEngineManager.streamState.collect { state ->
-                        updateNotification(state)
-                    }
+                    updateNotification(
+                        state
+                    )
                 }
             }
     }
@@ -306,14 +376,14 @@ class ZestoStreamingService : Service() {
                     )
                 )
 
-                _isRunning.value = true
-                _runtimeState.value = ServiceRuntimeState.SERVICE_RUNNING
-                _globalServiceState.value = ServiceRuntimeState.SERVICE_RUNNING
+                startPipelineInternal(
+                    activeConfig
+                )
             }
 
             ACTION_STOP -> {
 
-                _isRunning.value = false
+                stopPipelineInternal()
 
                 if (
                     Build.VERSION.SDK_INT >=
@@ -338,6 +408,37 @@ class ZestoStreamingService : Service() {
         }
 
         return START_STICKY
+    }
+
+    private fun startPipelineInternal(
+        config: StreamConfig
+    ) {
+
+        _isRunning.value = true
+
+        _runtimeState.value =
+            ServiceRuntimeState.SERVICE_RUNNING
+
+        _globalServiceState.value =
+            ServiceRuntimeState.SERVICE_RUNNING
+
+        framePipeline.start()
+
+        playerEngine.startStream(
+            config
+        )
+    }
+
+    private fun stopPipelineInternal() {
+
+        _isRunning.value = false
+
+        playerEngine.stopStream()
+
+        framePipeline.stop()
+
+        ZestoFrameBridge.setProviderRunning(false)
+        ZestoFrameBridge.reset()
     }
 
     private fun createNotificationChannel() {
@@ -449,6 +550,7 @@ class ZestoStreamingService : Service() {
     }
 
     override fun onDestroy() {
+
         playerStateJob?.cancel()
         playerStateJob = null
 
@@ -457,6 +559,15 @@ class ZestoStreamingService : Service() {
 
         _globalServiceState.value =
             ServiceRuntimeState.SERVICE_STOPPED
+
+        stopPipelineInternal()
+
+        playerEngine.release()
+
+        videoDecoder.release()
+
+        framePipeline.unregisterAll()
+        framePipeline.stop()
 
         serviceScope.cancel()
 

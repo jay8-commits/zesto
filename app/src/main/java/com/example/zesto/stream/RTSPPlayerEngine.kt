@@ -252,6 +252,7 @@ class RTSPPlayerEngine(
                 FrameSourceMode.RTSP
             )
 
+            Log.i(TAG, "[BRIDGE_INGEST] count=$count frameId=$count format=RGBA_8888")
             ZestoFrameBridge.postFrame(
                 width = width,
                 height = height,
@@ -1006,6 +1007,11 @@ class RTSPPlayerEngine(
                         totalProcessingOffsetUs: Long,
                         frameCount: Int
                     ) {
+                        val pts = eventTime.eventPlaybackPositionMs * 1000L
+                        Log.i(
+                            TAG,
+                            "[CODEC_OUTPUT] count=$frameCount pts=$pts flags=1"
+                        )
                         if (frameCount == 1 || frameCount % 30 == 0) {
                             Log.i(
                                 TAG,
@@ -1555,6 +1561,16 @@ class RTSPPlayerEngine(
                     "procCount=${health.processCount} frameCount=${health.frameCount} " +
                     "lastFrameAgeMs=${health.lastCallbackAgeMs} lastProcessAgeMs=${health.lastProcessAgeMs}"
             )
+
+            // Watchdog: If player is running but extractor has not received frames for > 3.5s, trigger recovery
+            if (isActuallyPlaying && pState == "READY" && rendered > 0 && health.lastCallbackAgeMs > 3500L) {
+                Log.w(
+                    TAG,
+                    "[DECODER_STALL_WATCHDOG] Frame pipeline stalled at $rendered frames (last frame age=${health.lastCallbackAgeMs}ms). Draining and recovering RTSP playback..."
+                )
+                offscreenFrameExtractor?.drainPendingFrames()
+                handlePlaybackFailure("Decoder stall watchdog: no frames received for ${health.lastCallbackAgeMs}ms")
+            }
         }
     }
 

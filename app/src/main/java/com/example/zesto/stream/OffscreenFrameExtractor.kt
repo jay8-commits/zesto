@@ -70,10 +70,10 @@ class OffscreenFrameExtractor(
         )
 
         private val QUAD_TEX_COORDS = floatArrayOf(
-            0.0f, 0.0f,
-            1.0f, 0.0f,
             0.0f, 1.0f,
-            1.0f, 1.0f
+            1.0f, 1.0f,
+            0.0f, 0.0f,
+            1.0f, 0.0f
         )
     }
 
@@ -103,9 +103,10 @@ class OffscreenFrameExtractor(
     private var textureBuffer: FloatBuffer? = null
     private var pixelBuffer: ByteBuffer? = null
     private var flippedPixelBuffer: ByteBuffer? = null
-    private var cachedRowBytes: ByteArray? = null
-    private var bitmapRing: Array<Bitmap>? = null
-    private var ringIndex = 0
+    private var reusableBitmap: Bitmap? = null
+    private var reusableRowBuffer: ByteArray? = null
+    private val bitmapPool: Array<Bitmap?> = arrayOfNulls(2)
+    private var poolIndex = 0
 
     @Volatile
     private var isInitialized = false
@@ -114,6 +115,10 @@ class OffscreenFrameExtractor(
     private var isReleased = false
 
     private var frameCount = 0L
+    private val surfaceTextureCallbackCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private var processCount = 0L
+    @Volatile private var lastCallbackTimestampMs = 0L
+    @Volatile private var lastProcessTimestampMs = 0L
 
     init {
         initGlThread()
@@ -450,35 +455,6 @@ class OffscreenFrameExtractor(
         )
     }
 
-    private var surfaceTextureFrameCount = 0L
-    private var lastCallbackMs = 0L
-    private var lastProcessMs = 0L
-
-    data class HealthInfo(
-        val threadAlive: Boolean,
-        val surfaceValid: Boolean,
-        val surfaceTextureValid: Boolean,
-        val callbackCount: Long,
-        val processCount: Long,
-        val frameCount: Long,
-        val lastCallbackAgeMs: Long,
-        val lastProcessAgeMs: Long
-    )
-
-    fun getHealthInfo(): HealthInfo {
-        val now = System.currentTimeMillis()
-        return HealthInfo(
-            threadAlive = glThread?.isAlive == true,
-            surfaceValid = outputSurface?.isValid == true,
-            surfaceTextureValid = surfaceTexture != null,
-            callbackCount = surfaceTextureFrameCount,
-            processCount = frameCount,
-            frameCount = frameCount,
-            lastCallbackAgeMs = if (lastCallbackMs > 0L) now - lastCallbackMs else -1L,
-            lastProcessAgeMs = if (lastProcessMs > 0L) now - lastProcessMs else -1L
-        )
-    }
-
     private fun initSurfaceTexture() {
         val st = SurfaceTexture(
             oesTextureId
@@ -490,17 +466,20 @@ class OffscreenFrameExtractor(
             )
 
             setOnFrameAvailableListener(
-                {
-                    val count = ++surfaceTextureFrameCount
-                    val now = System.currentTimeMillis()
-                    lastCallbackMs = now
-                    Log.i(TAG, "[SURFACETEX_AVAIL] count=$count timestamp=$now")
-                    if (count == 1L || count % 60L == 0L) {
-                        Log.i(TAG, "[SURFACE_TEXTURE_FRAME] frameAvailableCount=$count")
+                { stListener ->
+                    val cb = surfaceTextureCallbackCount.incrementAndGet()
+                    lastCallbackTimestampMs = System.currentTimeMillis()
+                    val ts = try { stListener?.timestamp ?: 0L } catch (_: Throwable) { 0L }
+                    Log.i(TAG, "[SURFACETEX_AVAIL] count=$cb timestamp=$ts")
+                    if (cb == 1L || cb % 30L == 0L) {
+                        Log.i(TAG, "[SURFACE_TEXTURE_FRAME] callbackCount=$cb timestamp=$ts threadAlive=${glThread?.isAlive} isReleased=$isReleased")
                     }
                     if (!isReleased) {
-                        glHandler?.post {
-                            drainPendingFrames()
+                        val posted = glHandler?.post {
+                            processFrame()
+                        }
+                        if (posted != true && (cb == 1L || cb % 30L == 0L)) {
+                            Log.w(TAG, "[SURFACE_TEXTURE_FRAME] Warning: glHandler post returned false")
                         }
                     }
                 },
@@ -510,22 +489,6 @@ class OffscreenFrameExtractor(
 
         surfaceTexture = st
         outputSurface = Surface(st)
-    }
-
-    /**
-     * Drains all pending frames from the SurfaceTexture queue.
-     * MediaCodec and SurfaceTexture can produce multiple frames per callback or during high-throughput.
-     * Calling updateTexImage() repeatedly until no new image is available ensures the 2-slot buffer queue
-     * never starves or blocks upstream hardware decoder output.
-     */
-    private fun drainPendingFrames() {
-        if (isReleased || !isInitialized) return
-        var drained = 0
-        while (drained < 4 && !isReleased) {
-            val processed = processFrame()
-            if (!processed) break
-            drained++
-        }
     }
 
     private fun initFBO(
@@ -674,15 +637,12 @@ class OffscreenFrameExtractor(
             )
                 .order(ByteOrder.nativeOrder())
 
-        cachedRowBytes = ByteArray(videoWidth * 4)
-
-        bitmapRing = Array(2) {
+        reusableBitmap =
             Bitmap.createBitmap(
                 videoWidth,
                 videoHeight,
                 Bitmap.Config.ARGB_8888
             )
-        }
     }
 
     fun updateDimensions(
@@ -751,16 +711,14 @@ class OffscreenFrameExtractor(
                     )
                         .order(ByteOrder.nativeOrder())
 
-                cachedRowBytes = ByteArray(width * 4)
+                reusableBitmap?.recycle()
 
-                bitmapRing?.forEach { it.recycle() }
-                bitmapRing = Array(2) {
+                reusableBitmap =
                     Bitmap.createBitmap(
                         width,
                         height,
                         Bitmap.Config.ARGB_8888
                     )
-                }
 
                 Log.i(
                     TAG,
@@ -776,9 +734,40 @@ class OffscreenFrameExtractor(
         }
     }
 
-    private var eglFailureCount = 0
+    fun drainPendingFrames() {
+        glHandler?.post {
+            try {
+                var drained = 0
+                val st = surfaceTexture
+                while (st != null && !isReleased && drained < 5) {
+                    try {
+                        st.updateTexImage()
+                        drained++
+                    } catch (_: Throwable) {
+                        break
+                    }
+                }
+                if (drained > 0) {
+                    Log.d(TAG, "[DRAIN_PENDING_FRAMES] Drained $drained pending texture frames")
+                }
+            } catch (_: Throwable) {}
+        }
+    }
 
-    private fun processFrame(): Boolean {
+    private fun recoverEGLContext() {
+        try {
+            Log.w(TAG, "[EGL_RECOVER] Attempting EGL context re-attachment...")
+            if (eglDisplay != EGL14.EGL_NO_DISPLAY && eglSurface != EGL14.EGL_NO_SURFACE && eglContext != EGL14.EGL_NO_CONTEXT) {
+                val success = EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                Log.i(TAG, "[EGL_RECOVER] eglMakeCurrent result: $success (error=${EGL14.eglGetError()})")
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "[EGL_RECOVER_FAILED] Failed to recover EGL context: ${e.message}")
+        }
+    }
+
+    private fun processFrame() {
+        val extractStartTimeMs = System.currentTimeMillis()
         if (
             isReleased ||
             !isInitialized ||
@@ -786,12 +775,10 @@ class OffscreenFrameExtractor(
             eglContext == EGL14.EGL_NO_CONTEXT ||
             eglSurface == EGL14.EGL_NO_SURFACE
         ) {
-            return false
+            return
         }
 
-        val startTimeMs = System.currentTimeMillis()
         try {
-            lastProcessMs = startTimeMs
             if (
                 !EGL14.eglMakeCurrent(
                     eglDisplay,
@@ -800,27 +787,25 @@ class OffscreenFrameExtractor(
                     eglContext
                 )
             ) {
-                val err = EGL14.eglGetError()
-                eglFailureCount++
                 Log.w(
                     TAG,
-                    "eglMakeCurrent failed during frame processing (error=$err, failureCount=$eglFailureCount)"
+                    "eglMakeCurrent failed during frame processing: ${EGL14.eglGetError()}"
                 )
-                if (eglFailureCount > 5) {
-                    recoverEGLContext()
-                }
-                return false
+                recoverEGLContext()
+                return
             }
-            eglFailureCount = 0
 
             val st = surfaceTexture
-                ?: return false
+                ?: return
+
+            val pCount = ++processCount
+            lastProcessTimestampMs = System.currentTimeMillis()
 
             try {
                 st.updateTexImage()
             } catch (e: Throwable) {
-                // Buffer queue might be empty or in transient state
-                return false
+                Log.w(TAG, "[EXTRACTOR_PROCESS_ERROR] updateTexImage failed: ${e.message}", e)
+                return
             }
 
             st.getTransformMatrix(
@@ -837,7 +822,7 @@ class OffscreenFrameExtractor(
                 programId == 0 ||
                 oesTextureId == 0
             ) {
-                return false
+                return
             }
 
             GLES20.glBindFramebuffer(
@@ -948,7 +933,7 @@ class OffscreenFrameExtractor(
             }
 
             val pBuf = pixelBuffer
-                ?: return false
+                ?: return
 
             pBuf.rewind()
 
@@ -975,7 +960,7 @@ class OffscreenFrameExtractor(
                     0
                 )
 
-                return false
+                return
             }
 
             GLES20.glBindFramebuffer(
@@ -985,51 +970,47 @@ class OffscreenFrameExtractor(
 
             pBuf.rewind()
 
-            if (flippedPixelBuffer == null || flippedPixelBuffer?.capacity() != width * height * 4) {
-                flippedPixelBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+            val targetSlot = poolIndex % 2
+            val existingBmp = bitmapPool[targetSlot]
+            val frameBitmap = if (existingBmp != null && !existingBmp.isRecycled && existingBmp.width == width && existingBmp.height == height) {
+                existingBmp
+            } else {
+                try {
+                    existingBmp?.recycle()
+                } catch (_: Throwable) {}
+                val newBmp = Bitmap.createBitmap(
+                    width,
+                    height,
+                    Bitmap.Config.ARGB_8888
+                )
+                bitmapPool[targetSlot] = newBmp
+                newBmp
             }
-            val flippedBuf = flippedPixelBuffer!!
-            flippedBuf.rewind()
+            poolIndex++
 
-            val rowStride = width * 4
-            if (cachedRowBytes == null || cachedRowBytes?.size != rowStride) {
-                cachedRowBytes = ByteArray(rowStride)
-            }
-            val rowBytes = cachedRowBytes!!
-
-            for (y in 0 until height) {
-                pBuf.position((height - 1 - y) * rowStride)
-                pBuf.get(rowBytes, 0, rowStride)
-                flippedBuf.put(rowBytes, 0, rowStride)
-            }
-            flippedBuf.rewind()
-
-            if (bitmapRing == null || bitmapRing?.get(0)?.width != width || bitmapRing?.get(0)?.height != height) {
-                bitmapRing?.forEach { it.recycle() }
-                bitmapRing = Array(2) {
-                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                }
-            }
-
-            ringIndex = (ringIndex + 1) % 2
-            val frameBitmap = bitmapRing!![ringIndex]
-            frameBitmap.copyPixelsFromBuffer(flippedBuf)
+            frameBitmap.copyPixelsFromBuffer(
+                pBuf
+            )
 
             val count = ++frameCount
-            val durMs = System.currentTimeMillis() - startTimeMs
 
             val timestampUs =
                 st.getTimestamp() / 1000L
 
+            val durMs = System.currentTimeMillis() - extractStartTimeMs
             Log.i(TAG, "[GL_EXTRACT] count=$count frameId=$count durMs=$durMs")
 
             if (
                 count == 1L ||
-                count % 60L == 0L
+                count % 30L == 0L
             ) {
                 Log.i(
                     TAG,
-                    "[EXTRACTOR_PROCESS] frameId=$count dimensions=${width}x${height} timestampUs=$timestampUs"
+                    "[EXTRACTOR_PROCESS] processCount=$pCount timestamp=$timestampUs decoderFrameNumber=$count"
+                )
+                Log.i(
+                    TAG,
+                    "[RTSP_DECODED_FRAME] decoderFrameNumber=$count timestamp=$timestampUs width=$width height=$height"
                 )
                 Log.i(
                     TAG,
@@ -1047,37 +1028,12 @@ class OffscreenFrameExtractor(
                 height,
                 timestampUs
             )
-            return true
         } catch (e: Throwable) {
             Log.w(
                 TAG,
                 "Error in processFrame: ${e.message}",
                 e
             )
-            return false
-        }
-    }
-
-    private fun recoverEGLContext() {
-        Log.w(TAG, "[GL_EXTRACTOR_RECOVER] Attempting EGL context recreation...")
-        try {
-            if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
-                if (eglSurface != EGL14.EGL_NO_SURFACE) {
-                    EGL14.eglDestroySurface(eglDisplay, eglSurface)
-                    eglSurface = EGL14.EGL_NO_SURFACE
-                }
-                if (eglContext != EGL14.EGL_NO_CONTEXT) {
-                    EGL14.eglDestroyContext(eglDisplay, eglContext)
-                    eglContext = EGL14.EGL_NO_CONTEXT
-                }
-            }
-            initEGL()
-            initGL()
-            initFBO(videoWidth, videoHeight)
-            eglFailureCount = 0
-            Log.i(TAG, "[GL_EXTRACTOR_RECOVER] EGL context successfully recreated")
-        } catch (t: Throwable) {
-            Log.e(TAG, "[GL_EXTRACTOR_RECOVER_FAILED] EGL recovery failed: ${t.message}", t)
         }
     }
 
@@ -1204,12 +1160,8 @@ class OffscreenFrameExtractor(
                 surfaceTexture?.release()
                 surfaceTexture = null
 
-                bitmapRing?.forEach { bmp ->
-                    if (!bmp.isRecycled) {
-                        bmp.recycle()
-                    }
-                }
-                bitmapRing = null
+                reusableBitmap?.recycle()
+                reusableBitmap = null
 
                 pixelBuffer = null
                 flippedPixelBuffer = null
@@ -1273,5 +1225,34 @@ class OffscreenFrameExtractor(
                 glHandler = null
             }
         }
+    }
+
+    data class ExtractorHealthInfo(
+        val threadAlive: Boolean,
+        val surfaceValid: Boolean,
+        val surfaceTextureValid: Boolean,
+        val callbackCount: Long,
+        val processCount: Long,
+        val frameCount: Long,
+        val lastCallbackAgeMs: Long,
+        val lastProcessAgeMs: Long,
+        val isReleased: Boolean
+    )
+
+    fun getHealthInfo(): ExtractorHealthInfo {
+        val now = System.currentTimeMillis()
+        val lastCb = lastCallbackTimestampMs
+        val lastProc = lastProcessTimestampMs
+        return ExtractorHealthInfo(
+            threadAlive = glThread?.isAlive == true,
+            surfaceValid = outputSurface?.isValid == true,
+            surfaceTextureValid = surfaceTexture != null,
+            callbackCount = surfaceTextureCallbackCount.get(),
+            processCount = processCount,
+            frameCount = frameCount,
+            lastCallbackAgeMs = if (lastCb > 0) now - lastCb else -1L,
+            lastProcessAgeMs = if (lastProc > 0) now - lastProc else -1L,
+            isReleased = isReleased
+        )
     }
 }

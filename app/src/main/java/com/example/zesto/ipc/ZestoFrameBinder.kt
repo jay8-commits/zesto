@@ -185,6 +185,7 @@ object ZestoFrameBinder {
         latestPublishedSeq = currentSeq
         val pubCount = publishCounter.incrementAndGet()
 
+        Log.i(TAG, "[IPC_PUBLISH] seq=$currentSeq shmIndex=$targetSlot size=$payloadSize")
         if (pubCount == 1L || pubCount % 30L == 0L || frameId == 1L || frameId % 30L == 0L) {
             Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] publishCount=$pubCount frameId=$frameId seq=$currentSeq activeSlot=$targetSlot bytes=$payloadSize res=${width}x${height} latestPublishedFrameId=$latestPublishedFrameId latestPublishedSeq=$latestPublishedSeq")
         }

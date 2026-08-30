@@ -96,16 +96,15 @@ object ZestoSharedMemoryBridge {
         }
         val buf = writeBuffer ?: return
 
-        var jpegBytes: ByteArray? = null
-        if (bitmap != null && !bitmap.isRecycled) {
+        val jpegBytes = if (rawBytes != null && rawBytes.isNotEmpty()) {
+            rawBytes
+        } else if (bitmap != null && !bitmap.isRecycled) {
             try {
-                val baos = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
-                jpegBytes = baos.toByteArray()
-            } catch (_: Throwable) {}
-        } else if (rawBytes != null) {
-            jpegBytes = rawBytes
-        }
+                val baos = ByteArrayOutputStream(width * height / 4)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+                baos.toByteArray()
+            } catch (_: Throwable) { null }
+        } else null
 
         if (jpegBytes == null || jpegBytes.isEmpty() || jpegBytes.size > (SLOT_SIZE - 256)) {
             return

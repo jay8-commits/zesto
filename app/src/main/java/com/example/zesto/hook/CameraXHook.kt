@@ -118,6 +118,8 @@ object CameraXHook {
     fun onSurfaceProvided(surface: Surface, targetPackage: String = "unknown") {
         currentStatus = CameraXStatus.SURFACE_PROVIDER_INTERCEPTED
         val hash = System.identityHashCode(surface).toString(16)
+        Log.i(TAG, "[HOOK_INVOKED]\npackage=$targetPackage\napi=CameraX")
+        Log.i(TAG, "[TARGET_PREVIEW_SURFACE]\nidentity=Surface@$hash\nwidth=1080\nheight=1920\nformat=PRIVATE")
         Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=CameraX\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
         Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
         Log.i(TAG, "[SURFACE_PROVIDER_INTERCEPTED] CameraX provided target preview surface.")
@@ -204,6 +206,14 @@ object CameraXHook {
                                 surface.unlockCanvasAndPost(canvas)
                                 if (hasNewFrame) {
                                     val count = substitutedFramesCount.incrementAndGet()
+                                    Log.i(TAG, "[ZESTO_SUBSTITUTION_OUTPUT]\nsurface=Surface@$hash\nframeId=$frameId\nseq=${frameResult.sequence}")
+                                    if (surface.isValid) {
+                                        val confMsg = "INJECTION_CONFIRMED: CameraX target preview Surface@$hash receiving Zesto frame #$count (source #$frameId)"
+                                        Log.i(TAG, "[INJECTION_STATE] $confMsg")
+                                        ZestoRemoteFrameSource.reportMilestone("INJECTION_CONFIRMED", confMsg)
+                                    } else {
+                                        Log.w(TAG, "[INJECTION_STATE] INJECTION_NOT_CONFIRMED: CameraX surfaceValid=${surface.isValid}")
+                                    }
                                     if (count == 1L || count % 60L == 0L) {
                                         Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] frameId=$frameId seq=${frameResult.sequence}")
                                         Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")

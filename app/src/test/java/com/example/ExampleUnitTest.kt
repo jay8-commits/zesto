@@ -564,5 +564,24 @@ class ExampleUnitTest {
         assertEquals(1080, remoteResult.width)
         assertEquals(1920, remoteResult.height)
     }
+
+    @Test
+    fun testZestoEngineLifecycleStates() {
+        val states = com.example.zesto.stream.ZestoEngineLifecycleState.entries
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTING))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTED))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.RUNNING))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.RECONNECTING))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTING))
+        assertTrue(states.contains(com.example.zesto.stream.ZestoEngineLifecycleState.ERROR))
+
+        val injectionStates = com.example.zesto.stream.VirtualInjectionState.entries
+        assertTrue(injectionStates.contains(com.example.zesto.stream.VirtualInjectionState.RTSP_CONNECTED))
+        assertTrue(injectionStates.contains(com.example.zesto.stream.VirtualInjectionState.DECODER_RUNNING))
+        assertTrue(injectionStates.contains(com.example.zesto.stream.VirtualInjectionState.FRAME_PIPELINE_RUNNING))
+        assertTrue(injectionStates.contains(com.example.zesto.stream.VirtualInjectionState.INJECTION_ATTEMPTED))
+        assertTrue(injectionStates.contains(com.example.zesto.stream.VirtualInjectionState.INJECTION_CONFIRMED))
+    }
 }
 

@@ -61,6 +61,8 @@ object LegacyCameraHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
+                        Log.i(TAG, "[HOOK_INVOKED]\npackage=$targetPackage\napi=Camera1")
+                        Log.i(TAG, "[CAMERA_DEVICE_OPEN]\npackage=$targetPackage\ncameraId=$cameraId")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open(cameraId=$cameraId)")
                         val msg = "Target process ($targetPackage) requested Camera1 device: cameraId=$cameraId"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -75,6 +77,8 @@ object LegacyCameraHook {
                 "open",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[HOOK_INVOKED]\npackage=$targetPackage\napi=Camera1")
+                        Log.i(TAG, "[CAMERA_DEVICE_OPEN]\npackage=$targetPackage\ncameraId=0")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open()")
                         val msg = "Target process ($targetPackage) requested default Camera1 device"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -143,6 +147,8 @@ object LegacyCameraHook {
         currentStatus = LegacyHookStatus.PREVIEW_DISPLAY_INTERCEPTED
         val surface = holder.surface
         val hash = System.identityHashCode(surface).toString(16)
+        Log.i(TAG, "[HOOK_INVOKED]\npackage=$targetPackage\napi=Camera1")
+        Log.i(TAG, "[TARGET_PREVIEW_SURFACE]\nidentity=Surface@$hash\nwidth=1080\nheight=1920\nformat=PRIVATE")
         Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
         Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceHolder preview display.")
@@ -155,8 +161,11 @@ object LegacyCameraHook {
         val surface = Surface(texture)
         val hash = System.identityHashCode(surface).toString(16)
         val texHash = System.identityHashCode(texture).toString(16)
+        Log.i(TAG, "[HOOK_INVOKED]\npackage=$targetPackage\napi=Camera1")
+        Log.i(TAG, "[TARGET_PREVIEW_SURFACE]\nidentity=Surface@$hash\nwidth=1080\nheight=1920\nformat=PRIVATE")
         Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=Surface\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=SurfaceTexture@$texHash")
         Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
+        Log.i(TAG, "[PHYSICAL_CAMERA_OUTPUT]\ncameraId=0\nsurface=SurfaceTexture@$texHash (REDIRECTED_TO_DUMMY)")
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceTexture preview.")
         Log.i(TAG, "[SURFACE_ATTACHED] Camera1 SurfaceTexture surface attached.")
         startFramePump(surface, targetPackage)
@@ -239,6 +248,14 @@ object LegacyCameraHook {
                                 surface.unlockCanvasAndPost(canvas)
                                 if (hasNewFrame) {
                                     val count = substitutedFramesCount.incrementAndGet()
+                                    Log.i(TAG, "[ZESTO_SUBSTITUTION_OUTPUT]\nsurface=Surface@$hash\nframeId=$frameId\nseq=${frameResult.sequence}")
+                                    if (surface.isValid) {
+                                        val confMsg = "INJECTION_CONFIRMED: Camera1 target preview Surface@$hash receiving Zesto frame #$count (source #$frameId)"
+                                        Log.i(TAG, "[INJECTION_STATE] $confMsg")
+                                        ZestoRemoteFrameSource.reportMilestone("INJECTION_CONFIRMED", confMsg)
+                                    } else {
+                                        Log.w(TAG, "[INJECTION_STATE] INJECTION_NOT_CONFIRMED: Camera1 surfaceValid=${surface.isValid}")
+                                    }
                                     if (count == 1L || count % 60L == 0L) {
                                         Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] frameId=$frameId seq=${frameResult.sequence}")
                                         Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")

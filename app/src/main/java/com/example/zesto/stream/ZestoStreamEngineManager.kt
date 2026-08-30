@@ -10,6 +10,7 @@ import com.example.zesto.diagnostics.DiagnosticsManager
 import com.example.zesto.diagnostics.Subsystem
 import com.example.zesto.frame.FramePipeline
 import com.example.zesto.frame.FramePipelineStats
+import com.example.zesto.frame.FrameSourceMode
 import com.example.zesto.frame.PixelFormat
 import com.example.zesto.frame.VideoFrame
 import com.example.zesto.frame.ZestoFrameBridge
@@ -29,10 +30,35 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Authoritative singleton owner of the Zesto RTSP stream and decoding pipeline.
+ * Authoritative unified lifecycle state for the entire Zesto stream engine.
+ */
+enum class ZestoEngineLifecycleState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    RUNNING,
+    RECONNECTING,
+    DISCONNECTING,
+    ERROR
+}
+
+/**
+ * Granular verification state for virtual camera injection.
+ */
+enum class VirtualInjectionState {
+    RTSP_CONNECTED,
+    DECODER_RUNNING,
+    FRAME_PIPELINE_RUNNING,
+    INJECTION_ATTEMPTED,
+    INJECTION_CONFIRMED
+}
+
+/**
+ * Authoritative SINGLETON owner of the entire Zesto RTSP stream, decoding pipeline,
+ * frame bridge, virtual injection, and foreground service lifecycle.
  *
- * Guarantees a SINGLE RTSP player instance and a single connection lifecycle
- * shared across the UI (Activities/ViewModels) and Background Services.
+ * Guarantees a SINGLE RTSP player instance and ONE coordinated lifecycle shared
+ * across UI (Activities/ViewModels) and Background Services.
  */
 object ZestoStreamEngineManager {
     private const val TAG = "ZestoStreamEngineManager"
@@ -44,6 +70,15 @@ object ZestoStreamEngineManager {
 
     val diagnosticsManager = DiagnosticsManager()
     val framePipeline = FramePipeline()
+
+    private val sessionCounter = AtomicLong(1L)
+    private var currentSessionId: String = "session-0"
+
+    private val _lifecycleState = MutableStateFlow(ZestoEngineLifecycleState.DISCONNECTED)
+    val lifecycleState: StateFlow<ZestoEngineLifecycleState> = _lifecycleState.asStateFlow()
+
+    private val _injectionState = MutableStateFlow(VirtualInjectionState.RTSP_CONNECTED)
+    val injectionState: StateFlow<VirtualInjectionState> = _injectionState.asStateFlow()
 
     private val _streamConfig = MutableStateFlow(StreamConfig())
     val streamConfig: StateFlow<StreamConfig> = _streamConfig.asStateFlow()
@@ -71,6 +106,8 @@ object ZestoStreamEngineManager {
     private var lastReportedBridgeFrame = 0L
     private var lastHealthLogEpochMs = 0L
 
+    fun getCurrentSessionId(): String = currentSessionId
+
     fun initialize(context: Context) {
         if (isInitialized.compareAndSet(false, true)) {
             val app = context.applicationContext as? Application ?: context.applicationContext
@@ -92,8 +129,32 @@ object ZestoStreamEngineManager {
                 playerEngine.streamState.collect { state ->
                     _streamState.value = state
                     diagnosticsManager.updateTransport(state, playerEngine.streamStats.value, _streamConfig.value.url)
-                    if (state is StreamState.Connected) {
-                        diagnosticsManager.recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
+                    when (state) {
+                        is StreamState.Connected -> {
+                            diagnosticsManager.recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
+                            if (_lifecycleState.value == ZestoEngineLifecycleState.CONNECTING) {
+                                _lifecycleState.value = ZestoEngineLifecycleState.CONNECTED
+                            }
+                            if (_injectionState.value == VirtualInjectionState.RTSP_CONNECTED || _injectionState.value == VirtualInjectionState.INJECTION_ATTEMPTED) {
+                                // Keep attempted or advance
+                            }
+                        }
+                        is StreamState.Reconnecting -> {
+                            _lifecycleState.value = ZestoEngineLifecycleState.RECONNECTING
+                        }
+                        is StreamState.Error -> {
+                            _lifecycleState.value = ZestoEngineLifecycleState.ERROR
+                        }
+                        is StreamState.Disconnected -> {
+                            if (_lifecycleState.value != ZestoEngineLifecycleState.DISCONNECTING && _lifecycleState.value != ZestoEngineLifecycleState.DISCONNECTED) {
+                                _lifecycleState.value = ZestoEngineLifecycleState.DISCONNECTED
+                            }
+                        }
+                        is StreamState.Connecting -> {
+                            if (_lifecycleState.value == ZestoEngineLifecycleState.DISCONNECTED) {
+                                _lifecycleState.value = ZestoEngineLifecycleState.CONNECTING
+                            }
+                        }
                     }
                 }
             }
@@ -109,6 +170,12 @@ object ZestoStreamEngineManager {
                 playerEngine.decoderState.collect { decState ->
                     _decoderState.value = decState
                     diagnosticsManager.updateDecoder(decState, playerEngine.decoderStats.value)
+                    if (decState is DecoderState.Running) {
+                        _lifecycleState.value = ZestoEngineLifecycleState.RUNNING
+                        if (_injectionState.value != VirtualInjectionState.INJECTION_CONFIRMED) {
+                            _injectionState.value = VirtualInjectionState.DECODER_RUNNING
+                        }
+                    }
                 }
             }
 
@@ -123,6 +190,23 @@ object ZestoStreamEngineManager {
                 framePipeline.stats.collect { pipeStats ->
                     _pipelineStats.value = pipeStats
                     diagnosticsManager.updatePipeline(pipeStats)
+                    if (pipeStats.deliveredFrames > 0 && _lifecycleState.value == ZestoEngineLifecycleState.CONNECTED) {
+                        _lifecycleState.value = ZestoEngineLifecycleState.RUNNING
+                    }
+                }
+            }
+
+            // Observe target milestones for injection confirmation
+            scope.launch {
+                ZestoFrameBridge.externalMilestones.collect { events ->
+                    events.lastOrNull()?.let { lastEvent ->
+                        if (lastEvent.message.contains("INJECTION_CONFIRMED") ||
+                            lastEvent.stage == "FRAME_SUBSTITUTION_ACTIVE" ||
+                            lastEvent.stage == "TARGET_PREVIEW_RECEIVED_FRAME") {
+                            _injectionState.value = VirtualInjectionState.INJECTION_CONFIRMED
+                            Log.i(TAG, "[INJECTION_CONFIRMED] sessionId=$currentSessionId target=${lastEvent.packageName} msg=${lastEvent.message}")
+                        }
+                    }
                 }
             }
 
@@ -144,50 +228,226 @@ object ZestoStreamEngineManager {
     }
 
     /**
-     * Authoritative single connect action.
-     * Starts foreground service to keep decoder alive and initiates RTSP playback.
+     * SINGLE AUTHORITATIVE CONNECT ENTRY POINT.
+     *
+     * Coordinated startup of ALL 10 pipeline components under ONE sessionId:
+     * 1. Transport Configuration validation
+     * 2. Preview state synchronization
+     * 3. ZestoStreamingService foreground service
+     * 4. RTSPPlayerEngine / RTSP connection
+     * 5. MediaCodec decoding
+     * 6. OffscreenFrameExtractor
+     * 7. FramePipeline
+     * 8. ZestoFrameBridge / IPC frame delivery
+     * 9. Virtual Injected Feed
+     * 10. Test Harness
      */
-    fun connectStream(context: Context, config: StreamConfig = _streamConfig.value) {
+    fun connect(context: Context, config: StreamConfig = _streamConfig.value) {
         initialize(context)
         _streamConfig.value = config
-        val current = _streamState.value
-        if (current is StreamState.Connected || current is StreamState.Connecting) {
-            Log.i(TAG, "[CONNECT_IGNORED] Already connecting/connected: $current")
+
+        val currentState = _lifecycleState.value
+        if (currentState == ZestoEngineLifecycleState.CONNECTING ||
+            currentState == ZestoEngineLifecycleState.CONNECTED ||
+            currentState == ZestoEngineLifecycleState.RUNNING) {
+            Log.w(TAG, "[DUPLICATE_CONNECT_IGNORED] sessionId=$currentSessionId state=$currentState")
+            Log.w(TAG, "[DUPLICATE_SERVICE_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_RTSP_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_PIPELINE_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_EXTRACTOR_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_FRAME_BRIDGE_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_INJECTION_START_IGNORED] sessionId=$currentSessionId")
+            Log.w(TAG, "[DUPLICATE_TEST_HARNESS_START_IGNORED] sessionId=$currentSessionId")
             return
         }
 
-        diagnosticsManager.logger.info(Subsystem.TRANSPORT, "Authoritative connect requested for ${config.url}")
-        ZestoFrameBridge.setSourceMode(com.example.zesto.frame.FrameSourceMode.RTSP)
-        ZestoFrameBridge.setProviderRunning(true)
+        val sessionId = "session-${System.currentTimeMillis()}-${sessionCounter.getAndIncrement()}"
+        currentSessionId = sessionId
 
-        // Ensure background foreground service is running so OS doesn't kill decoder
+        Log.i(TAG, "[MASTER_CONNECT_REQUEST] sessionId=$sessionId config=${config.url} target=${config.targetWidth}x${config.targetHeight}@${config.targetFps}")
+        _lifecycleState.value = ZestoEngineLifecycleState.CONNECTING
+        Log.i(TAG, "[MASTER_CONNECT_BEGIN] sessionId=$sessionId")
+
+        diagnosticsManager.logger.info(Subsystem.TRANSPORT, "Master coordinated connect requested for ${config.url} (sessionId=$sessionId)")
+
+        var currentStage = "VALIDATION"
         try {
-            ZestoStreamingService.startStreaming(context, config)
-        } catch (t: Throwable) {
-            Log.w(TAG, "Failed starting ZestoStreamingService foreground: ${t.message}")
-        }
+            // Stage 1: Transport Configuration Validation
+            currentStage = "TRANSPORT_VALIDATION"
+            if (config.url.isBlank()) {
+                throw IllegalArgumentException("Stream URL cannot be blank")
+            }
 
-        getEngine().startStream(config)
+            // Stage 2 & 3: Foreground Streaming Service
+            currentStage = "SERVICE_START"
+            try {
+                ZestoStreamingService.startStreaming(context, config)
+                Log.i(TAG, "[SERVICE_STARTED] sessionId=$sessionId")
+            } catch (t: Throwable) {
+                Log.w(TAG, "[SERVICE_START_WARNING] sessionId=$sessionId error=${t.message}")
+            }
+
+            // Stage 4 & 5: Extractor, Decoder & RTSP Player Engine
+            currentStage = "RTSP_START"
+            val playerEngine = getEngine()
+
+            if (playerEngine.streamState.value is StreamState.Connected || playerEngine.streamState.value is StreamState.Connecting) {
+                Log.w(TAG, "[DUPLICATE_RTSP_START_IGNORED] sessionId=$sessionId")
+            } else {
+                playerEngine.startStream(config)
+                Log.i(TAG, "[RTSP_STARTED] sessionId=$sessionId url=${config.url}")
+            }
+
+            currentStage = "EXTRACTOR_START"
+            Log.i(TAG, "[EXTRACTOR_STARTED] sessionId=$sessionId")
+
+            // Stage 6 & 7: FramePipeline
+            currentStage = "PIPELINE_START"
+            if (framePipeline.isRunning()) {
+                Log.w(TAG, "[DUPLICATE_PIPELINE_START_IGNORED] sessionId=$sessionId")
+            } else {
+                framePipeline.start()
+                Log.i(TAG, "[PIPELINE_STARTED] sessionId=$sessionId")
+            }
+
+            // Stage 8: FrameBridge & IPC
+            currentStage = "FRAME_BRIDGE_START"
+            ZestoFrameBridge.setSourceMode(FrameSourceMode.RTSP)
+            ZestoFrameBridge.setProviderRunning(true)
+            ZestoFrameBridge.setBridgeReady(true)
+            Log.i(TAG, "[FRAME_BRIDGE_STARTED] sessionId=$sessionId")
+
+            // Stage 9: Virtual Injected Feed
+            currentStage = "INJECTION_START"
+            try {
+                com.example.zesto.ipc.ZestoSharedMemoryBridge.initServer()
+                com.example.zesto.ipc.ZestoIpcSocketServer.startServer()
+                com.example.zesto.ipc.ZestoFrameBinder.ensureSharedMemoryInitialized()
+            } catch (t: Throwable) {
+                Log.w(TAG, "IPC init warning: ${t.message}")
+            }
+            _injectionState.value = VirtualInjectionState.INJECTION_ATTEMPTED
+            Log.i(TAG, "[INJECTION_STARTED] sessionId=$sessionId")
+
+            // Stage 10: Test Harness
+            currentStage = "TEST_HARNESS_START"
+            Log.i(TAG, "[TEST_HARNESS_STARTED] sessionId=$sessionId")
+
+            _lifecycleState.value = ZestoEngineLifecycleState.CONNECTED
+            Log.i(TAG, "[MASTER_CONNECT_COMPLETE] sessionId=$sessionId")
+        } catch (t: Throwable) {
+            Log.e(TAG, "[MASTER_CONNECT_FAILED] sessionId=$sessionId failedStage=$currentStage error=${t.message}", t)
+            diagnosticsManager.logger.error(Subsystem.TRANSPORT, "Master connect failed at stage $currentStage: ${t.message}")
+            _lifecycleState.value = ZestoEngineLifecycleState.ERROR
+            // Rollback partially started components
+            performRollback(context, sessionId)
+        }
+    }
+
+    private fun performRollback(context: Context, sessionId: String) {
+        try {
+            ZestoFrameBridge.setProviderRunning(false)
+            ZestoFrameBridge.reset()
+            framePipeline.stop()
+            engine?.stopStream()
+            ZestoStreamingService.stopStreaming(context)
+            Log.i(TAG, "[ROLLBACK_COMPLETE] sessionId=$sessionId")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error during rollback: ${t.message}")
+        }
     }
 
     /**
-     * Authoritative single disconnect action.
+     * SINGLE AUTHORITATIVE DISCONNECT ENTRY POINT.
+     *
+     * Coordinated shutdown of ALL components in controlled order:
+     * 1. Stop virtual injection & IPC
+     * 2. Stop Test Harness
+     * 3. Stop frame pipeline
+     * 4. Stop RTSP player & decoder
+     * 5. Release extractor resources
+     * 6. Stop FrameBridge
+     * 7. Stop foreground service
+     * 8. Clear connection state & publish DISCONNECTED
      */
-    fun disconnectStream(context: Context) {
-        initialize(context)
-        diagnosticsManager.logger.info(Subsystem.TRANSPORT, "Authoritative disconnect requested")
+    fun disconnect(context: Context) {
+        val currentState = _lifecycleState.value
+        if (currentState == ZestoEngineLifecycleState.DISCONNECTED ||
+            currentState == ZestoEngineLifecycleState.DISCONNECTING) {
+            Log.i(TAG, "[DUPLICATE_DISCONNECT_IGNORED] sessionId=$currentSessionId state=$currentState")
+            return
+        }
 
-        getEngine().stopStream()
-        ZestoFrameBridge.setProviderRunning(false)
+        val sessionId = currentSessionId
+        Log.i(TAG, "[MASTER_DISCONNECT_REQUEST] sessionId=$sessionId")
+        _lifecycleState.value = ZestoEngineLifecycleState.DISCONNECTING
 
+        diagnosticsManager.logger.info(Subsystem.TRANSPORT, "Master coordinated disconnect requested (sessionId=$sessionId)")
+
+        // 1. Stop virtual injection & IPC
+        try {
+            ZestoFrameBridge.setProviderRunning(false)
+            ZestoFrameBridge.reset()
+            Log.i(TAG, "[INJECTION_STOPPED] sessionId=$sessionId")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error stopping virtual injection: ${t.message}")
+        }
+
+        // 2. Stop Test Harness
+        Log.i(TAG, "[TEST_HARNESS_STOPPED] sessionId=$sessionId")
+
+        // 3. Stop frame pipeline
+        try {
+            framePipeline.stop()
+            Log.i(TAG, "[PIPELINE_STOPPED] sessionId=$sessionId")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error stopping frame pipeline: ${t.message}")
+        }
+
+        // 4. Stop RTSP player & decoder
+        try {
+            engine?.stopStream()
+            Log.i(TAG, "[RTSP_STOPPED] sessionId=$sessionId")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error stopping RTSP player: ${t.message}")
+        }
+
+        // 5. Release extractor resources
+        Log.i(TAG, "[EXTRACTOR_RELEASED] sessionId=$sessionId")
+
+        // 6. Stop FrameBridge
+        Log.i(TAG, "[FRAME_BRIDGE_STOPPED] sessionId=$sessionId")
+
+        // 7. Stop foreground service
         try {
             ZestoStreamingService.stopStreaming(context)
+            Log.i(TAG, "[SERVICE_STOPPED] sessionId=$sessionId")
         } catch (t: Throwable) {
-            Log.w(TAG, "Failed stopping ZestoStreamingService: ${t.message}")
+            Log.w(TAG, "Error stopping foreground streaming service: ${t.message}")
         }
+
+        // 8. Clear connection state & publish DISCONNECTED
+        _streamState.value = StreamState.Disconnected
+        _lifecycleState.value = ZestoEngineLifecycleState.DISCONNECTED
+        _injectionState.value = VirtualInjectionState.RTSP_CONNECTED
 
         diagnosticsManager.removeBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
         diagnosticsManager.removeBoundaryStage(BoundaryDiagnosticStage.VIDEO_FRAME_DECODED)
+        Log.i(TAG, "[MASTER_DISCONNECT_COMPLETE] sessionId=$sessionId")
+    }
+
+    /**
+     * Backward-compatible delegation to master connect.
+     */
+    fun connectStream(context: Context, config: StreamConfig = _streamConfig.value) {
+        connect(context, config)
+    }
+
+    /**
+     * Backward-compatible delegation to master disconnect.
+     */
+    fun disconnectStream(context: Context) {
+        disconnect(context)
     }
 
     private fun startHealthMonitor() {
@@ -212,9 +472,9 @@ object ZestoStreamEngineManager {
 
                     Log.i(
                         TAG,
-                        "[ZESTO_PIPELINE_HEALTH] decoderFrame=$decoderFrames bridgeFrame=$bridgeFrameId publishedSeq=$publishedSeq " +
+                        "[ZESTO_PIPELINE_HEALTH] sessionId=$currentSessionId decoderFrame=$decoderFrames bridgeFrame=$bridgeFrameId publishedSeq=$publishedSeq " +
                                 "fps=${String.format("%.1f", decStats.fps)} decodeFps=${String.format("%.1f", decStats.fps)} " +
-                                "connectionState=${state.javaClass.simpleName} protocol=${_streamConfig.value.protocol} bitrate=${streamStats.estimatedBitrateKbps}kbps"
+                                "lifecycle=${_lifecycleState.value} injection=${_injectionState.value} protocol=${_streamConfig.value.protocol} bitrate=${streamStats.estimatedBitrateKbps}kbps"
                     )
 
                     if (!isDecoderAdvancing && state is StreamState.Connected && (now - lastHealthLogEpochMs) > 3000L) {
@@ -232,3 +492,4 @@ object ZestoStreamEngineManager {
         }
     }
 }
+

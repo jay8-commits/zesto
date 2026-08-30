@@ -37,4 +37,52 @@ class ExampleRobolectricTest {
         val caps = detector.detectDeviceCapabilities()
         assertNotNull(caps.apiType)
     }
+
+    @Test
+    fun testUnifiedLifecycleSingleConnectDisconnectFlow() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = com.example.zesto.stream.ZestoStreamEngineManager
+        manager.initialize(context)
+
+        assertEquals(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED, manager.lifecycleState.value)
+
+        val config = com.example.zesto.stream.StreamConfig(url = "rtsp://127.0.0.1:8554/live")
+        manager.connect(context, config)
+
+        val activeState = manager.lifecycleState.value
+        org.junit.Assert.assertTrue(
+            activeState == com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTING ||
+            activeState == com.example.zesto.stream.ZestoEngineLifecycleState.CONNECTED ||
+            activeState == com.example.zesto.stream.ZestoEngineLifecycleState.RUNNING
+        )
+
+        // Test duplicate connect is safely handled
+        manager.connect(context, config)
+        assertEquals(activeState, manager.lifecycleState.value)
+
+        // Test disconnect
+        manager.disconnect(context)
+        assertEquals(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED, manager.lifecycleState.value)
+
+        // Test duplicate disconnect is safely handled
+        manager.disconnect(context)
+        assertEquals(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED, manager.lifecycleState.value)
+    }
+
+    @Test
+    fun testMasterConnectValidationRollback() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = com.example.zesto.stream.ZestoStreamEngineManager
+        manager.initialize(context)
+
+        // Blank URL should fail validation and transition to ERROR
+        val invalidConfig = com.example.zesto.stream.StreamConfig(url = "")
+        manager.connect(context, invalidConfig)
+
+        assertEquals(com.example.zesto.stream.ZestoEngineLifecycleState.ERROR, manager.lifecycleState.value)
+
+        // Clean disconnect should restore DISCONNECTED
+        manager.disconnect(context)
+        assertEquals(com.example.zesto.stream.ZestoEngineLifecycleState.DISCONNECTED, manager.lifecycleState.value)
+    }
 }

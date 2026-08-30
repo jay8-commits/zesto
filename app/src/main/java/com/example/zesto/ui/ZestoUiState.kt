@@ -5,6 +5,8 @@ import com.example.zesto.camera.CameraCapabilities
 import com.example.zesto.diagnostics.DiagnosticsEvent
 import com.example.zesto.diagnostics.DiagnosticsSnapshot
 import com.example.zesto.stream.StreamConfig
+import com.example.zesto.stream.VirtualInjectionState
+import com.example.zesto.stream.ZestoEngineLifecycleState
 import com.example.zesto.target.TargetProfile
 
 enum class ZestoTab(val title: String) {
@@ -17,6 +19,8 @@ enum class ZestoTab(val title: String) {
 data class ZestoUiState(
     val selectedTab: ZestoTab = ZestoTab.STREAM_CONFIG,
     val streamConfig: StreamConfig = StreamConfig(),
+    val lifecycleState: ZestoEngineLifecycleState = ZestoEngineLifecycleState.DISCONNECTED,
+    val injectionState: VirtualInjectionState = VirtualInjectionState.RTSP_CONNECTED,
     val isConnecting: Boolean = false,
     val isConnected: Boolean = false,
     val isDecoding: Boolean = false,

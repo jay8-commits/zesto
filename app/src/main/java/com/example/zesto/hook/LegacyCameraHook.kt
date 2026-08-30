@@ -2,7 +2,6 @@ package com.example.zesto.hook
 
 import android.graphics.Canvas
 import android.graphics.SurfaceTexture
-import android.hardware.Camera
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -17,9 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Legacy android.hardware.Camera (Camera1) hook adapter.
- * Intercepts Camera.setPreviewDisplay(SurfaceHolder), Camera.setPreviewTexture(SurfaceTexture),
- * and isolates the target application's real preview Surface by redirecting hardware camera stream
- * to an offscreen dummy SurfaceTexture.
+ * Intercepts Camera.setPreviewDisplay(SurfaceHolder) and Camera.setPreviewTexture(SurfaceTexture).
  */
 object LegacyCameraHook {
     private const val TAG = "ZestoLegacyCameraHook"
@@ -34,25 +31,14 @@ object LegacyCameraHook {
 
     private var currentStatus = LegacyHookStatus.UNINITIALIZED
     private val isPumping = AtomicBoolean(false)
-    private val renderExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "ZestoCamera1RenderThread").apply { isDaemon = true }
-    }
+    private val renderExecutor = Executors.newSingleThreadExecutor()
     private var pumpTask: Future<*>? = null
     private val substitutedFramesCount = AtomicLong(0L)
-
-    // Call tracking counters
-    private val openCallCount = AtomicLong(0L)
-    private val setPreviewDisplayCount = AtomicLong(0L)
-    private val setPreviewTextureCount = AtomicLong(0L)
-    private val startPreviewCount = AtomicLong(0L)
-    private val stopPreviewCount = AtomicLong(0L)
-    private val releaseCount = AtomicLong(0L)
 
     val status: LegacyHookStatus get() = currentStatus
 
     private var dummySurfaceTexture: SurfaceTexture? = null
 
-    @Synchronized
     private fun getOrCreateDummyTexture(): SurfaceTexture {
         val existing = dummySurfaceTexture
         if (existing != null) return existing
@@ -67,17 +53,14 @@ object LegacyCameraHook {
         try {
             val cameraClass = Class.forName("android.hardware.Camera", false, classLoader)
 
-            // 1. Hook Camera.open(int)
+            // Hook Camera.open(int)
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "open",
                 Int::class.javaPrimitiveType,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = openCallCount.incrementAndGet()
                         val cameraId = param.args.getOrNull(0)?.toString() ?: "0"
-                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
-                        Log.i(TAG, "[LEGACY_CAMERA_OPEN_INTERCEPTED] Camera.open(cameraId=$cameraId) call #$count in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open(cameraId=$cameraId)")
                         val msg = "Target process ($targetPackage) requested Camera1 device: cameraId=$cameraId"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -86,15 +69,12 @@ object LegacyCameraHook {
                 }
             )
 
-            // 2. Hook Camera.open()
+            // Hook Camera.open()
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "open",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = openCallCount.incrementAndGet()
-                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
-                        Log.i(TAG, "[LEGACY_CAMERA_OPEN_INTERCEPTED] Camera.open() default device call #$count in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.open()")
                         val msg = "Target process ($targetPackage) requested default Camera1 device"
                         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -103,95 +83,48 @@ object LegacyCameraHook {
                 }
             )
 
-            // 3. Hook setPreviewDisplay(SurfaceHolder) with Hardware Camera Stream Redirection
+            // Hook setPreviewDisplay(SurfaceHolder)
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "setPreviewDisplay",
                 SurfaceHolder::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = setPreviewDisplayCount.incrementAndGet()
-                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
-                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewDisplay(SurfaceHolder) call #$count")
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewDisplay(SurfaceHolder)")
                         val holder = param.args.getOrNull(0) as? SurfaceHolder
-                        val camera = param.thisObject as? Camera
                         if (holder != null) {
                             onPreviewDisplaySet(holder, targetPackage)
-                            // Redirect hardware camera to dummy texture so real SurfaceHolder is not overwritten by HAL
-                            if (camera != null) {
-                                try {
-                                    val dummy = getOrCreateDummyTexture()
-                                    camera.setPreviewTexture(dummy)
-                                    param.result = null // Suppress native setPreviewDisplay to keep SurfaceHolder isolated
-                                    Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Camera1 preview display redirected to dummy SurfaceTexture. Real preview SurfaceHolder isolated.")
-                                } catch (e: Throwable) {
-                                    Log.w(TAG, "Failed to redirect preview display to dummy texture: ${e.message}")
-                                }
-                            }
                         }
                     }
                 }
             )
 
-            // 4. Hook setPreviewTexture(SurfaceTexture) with Hardware Camera Stream Redirection
+            // Hook setPreviewTexture(SurfaceTexture) with hardware redirection
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "setPreviewTexture",
                 SurfaceTexture::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = setPreviewTextureCount.incrementAndGet()
-                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
-                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewTexture(SurfaceTexture) call #$count")
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.setPreviewTexture(SurfaceTexture)")
                         val texture = param.args.getOrNull(0) as? SurfaceTexture
-                        val dummy = getOrCreateDummyTexture()
-                        if (texture != null && texture != dummy) {
-                            onPreviewTextureSet(texture, targetPackage)
+                        if (texture != null) {
                             // Redirect hardware camera to dummy texture so preview texture is isolated
-                            param.args[0] = dummy
-                            Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Camera1 preview texture redirected to dummy SurfaceTexture. Real preview SurfaceTexture isolated.")
+                            param.args[0] = getOrCreateDummyTexture()
+                            Log.i(TAG, "[HARDWARE_STREAM_REDIRECTED] Camera1 preview texture redirected to dummy SurfaceTexture. Real preview isolated.")
+                            onPreviewTextureSet(texture, targetPackage)
                         }
                     }
                 }
             )
 
-            // 5. Hook startPreview()
+            // Hook startPreview()
             XposedHelpers.findAndHookMethod(
                 cameraClass,
                 "startPreview",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = startPreviewCount.incrementAndGet()
-                        Log.i(TAG, "[CAMERA_API_DETECTED] api=LEGACY_CAMERA")
-                        Log.i(TAG, "[LEGACY_CAMERA_PREVIEW_STARTED] Camera.startPreview() call #$count in $targetPackage")
                         Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.startPreview()")
-                    }
-                }
-            )
-
-            // 6. Hook stopPreview()
-            XposedHelpers.findAndHookMethod(
-                cameraClass,
-                "stopPreview",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = stopPreviewCount.incrementAndGet()
-                        Log.i(TAG, "[LEGACY_CAMERA_STOP_PREVIEW] Camera.stopPreview() call #$count in $targetPackage")
-                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.stopPreview()")
-                    }
-                }
-            )
-
-            // 7. Hook release()
-            XposedHelpers.findAndHookMethod(
-                cameraClass,
-                "release",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val count = releaseCount.incrementAndGet()
-                        Log.i(TAG, "[LEGACY_CAMERA_RELEASE] Camera.release() call #$count in $targetPackage")
-                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=Camera.release()")
-                        stopFramePump()
                     }
                 }
             )
@@ -209,10 +142,9 @@ object LegacyCameraHook {
     fun onPreviewDisplaySet(holder: SurfaceHolder, targetPackage: String = "unknown") {
         currentStatus = LegacyHookStatus.PREVIEW_DISPLAY_INTERCEPTED
         val surface = holder.surface
-        val holderHash = System.identityHashCode(holder).toString(16)
-        val surfaceHash = System.identityHashCode(surface).toString(16)
-        Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$surfaceHash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
-        Log.i(TAG, "[SURFACE_LIFECYCLE] SurfaceHolder=@$holderHash Surface=@$surfaceHash valid=${surface.isValid} in $targetPackage")
+        val hash = System.identityHashCode(surface).toString(16)
+        Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=${surface.javaClass.name}\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=null")
+        Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceHolder preview display.")
         Log.i(TAG, "[SURFACE_ATTACHED] Camera1 SurfaceHolder surface attached.")
         startFramePump(surface, targetPackage)
@@ -221,10 +153,10 @@ object LegacyCameraHook {
     fun onPreviewTextureSet(texture: SurfaceTexture, targetPackage: String = "unknown") {
         currentStatus = LegacyHookStatus.PREVIEW_DISPLAY_INTERCEPTED
         val surface = Surface(texture)
-        val surfaceHash = System.identityHashCode(surface).toString(16)
+        val hash = System.identityHashCode(surface).toString(16)
         val texHash = System.identityHashCode(texture).toString(16)
-        Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=Surface\nSURFACE_ID=@$surfaceHash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=SurfaceTexture@$texHash")
-        Log.i(TAG, "[SURFACE_LIFECYCLE] SurfaceTexture=@$texHash Surface=@$surfaceHash valid=${surface.isValid} in $targetPackage")
+        Log.i(TAG, "[CAMERA_OUTPUT_DISCOVERED]\nTARGET=$targetPackage\nAPI=Camera1\nCLASS=Surface\nSURFACE_ID=@$hash\nWIDTH=1080\nHEIGHT=1920\nFORMAT=UNKNOWN\nVALID=${surface.isValid}\nSURFACE_TEXTURE=SurfaceTexture@$texHash")
+        Log.i(TAG, "[SURFACE_SESSION_OUTPUT] hash=@$hash valid=${surface.isValid} in $targetPackage")
         Log.i(TAG, "[PREVIEW_DISPLAY_INTERCEPTED] Intercepted Camera1 SurfaceTexture preview.")
         Log.i(TAG, "[SURFACE_ATTACHED] Camera1 SurfaceTexture surface attached.")
         startFramePump(surface, targetPackage)
@@ -232,11 +164,7 @@ object LegacyCameraHook {
 
     private fun startFramePump(surface: Surface, targetPackage: String = "unknown") {
         stopFramePump()
-        if (!surface.isValid) {
-            val surfaceHash = System.identityHashCode(surface).toString(16)
-            Log.w(TAG, "[SURFACE_INVALID] Cannot start frame pump on invalid Surface=@$surfaceHash")
-            return
-        }
+        if (!surface.isValid) return
         isPumping.set(true)
         currentStatus = LegacyHookStatus.FRAME_PUMP_ACTIVE
 
@@ -247,22 +175,44 @@ object LegacyCameraHook {
 
         pumpTask = renderExecutor.submit {
             var cycleCount = 0L
-            val surfaceHash = System.identityHashCode(surface).toString(16)
-            val threadName = Thread.currentThread().name
+            val hash = System.identityHashCode(surface).toString(16)
+            var lastRenderedFrameId = 0L
+            var lastRenderedSeq = 0L
+            var lastStandbyRenderMs = 0L
 
             while (isPumping.get() && surface.isValid) {
                 try {
                     val frameResult = ZestoRemoteFrameSource.fetchLatestFrame()
                     val bitmap = frameResult.bitmap
                     cycleCount++
+
+                    val now = System.currentTimeMillis()
+                    val hasNewFrame = frameResult.isNewFrame && frameResult.frameId > 0L &&
+                            (frameResult.frameId > lastRenderedFrameId || frameResult.sequence > lastRenderedSeq) &&
+                            bitmap != null && !bitmap.isRecycled
+
+                    val needsStandbyRender = (bitmap == null || frameResult.healthState == "AWAITING_ZESTO_PROVIDER") &&
+                            (now - lastStandbyRenderMs > 1000L)
+
+                    if (!hasNewFrame && !needsStandbyRender) {
+                        Thread.sleep(10L)
+                        continue
+                    }
+
+                    if (hasNewFrame) {
+                        lastRenderedFrameId = frameResult.frameId
+                        lastRenderedSeq = frameResult.sequence
+                    } else if (needsStandbyRender) {
+                        lastStandbyRenderMs = now
+                    }
+
                     val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
-                    val bmpHash = if (bitmap != null) System.identityHashCode(bitmap).toString(16) else "null"
 
                     var canvas: Canvas? = null
                     try {
-                        if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                            Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId thread=$threadName hasBitmap=${bitmap != null} isRecycled=${bitmap?.isRecycled ?: true} bmpSize=${bitmap?.width}x${bitmap?.height} bmpId=@$bmpHash health=${frameResult.healthState}")
-                            Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$surfaceHash valid=${surface.isValid}")
+                        if (hasNewFrame && (lastRenderedFrameId == 1L || lastRenderedFrameId % 60L == 0L)) {
+                            Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId")
+                            Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
                         }
 
                         canvas = surface.lockCanvas(null)
@@ -276,41 +226,38 @@ object LegacyCameraHook {
                                 cropMode = FrameCropMode.CENTER_CROP_9_16,
                                 fps = 29.8
                             )
-                            if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                                Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId canvasSize=${canvas.width}x${canvas.height}")
-                            }
-                        } else {
-                            if (cycleCount == 1L || cycleCount % 60L == 0L) {
-                                Log.w(TAG, "[LOCK_CANVAS_NULL] surface.lockCanvas returned null for surface=@$surfaceHash")
+                            if (hasNewFrame && (lastRenderedFrameId == 1L || lastRenderedFrameId % 60L == 0L)) {
+                                Log.i(TAG, "[FRAME_RENDERED_TO_OUTPUT] id=$frameId")
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Camera1 render canvas exception on surface=@$surfaceHash: ${e.message}")
+                        Log.w(TAG, "Camera1 render canvas exception on surface=@$hash: ${e.message}")
                     } finally {
                         if (canvas != null) {
                             try {
                                 surface.unlockCanvasAndPost(canvas)
-                                val count = substitutedFramesCount.incrementAndGet()
-                                if (count == 1L || count % 30L == 0L) {
-                                    Log.i(TAG, "[FRAME_RENDER] renderCount=$count frameId=$frameId seq=${frameResult.sequence}")
-                                    Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
-                                    val logMsg = "Target preview surface received and posted frame #$count (frameId=$frameId seq=${frameResult.sequence})"
-                                    Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] $logMsg")
-                                    ZestoRemoteFrameSource.reportMilestone("FRAME_POSTED_TO_SURFACE", logMsg)
+                                if (hasNewFrame) {
+                                    val count = substitutedFramesCount.incrementAndGet()
+                                    if (count == 1L || count % 60L == 0L) {
+                                        Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
+                                        val logMsg = "Target preview surface received and displayed frame #$count"
+                                        Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")
+                                        ZestoRemoteFrameSource.reportMilestone("TARGET_PREVIEW_RECEIVED_FRAME", logMsg)
+                                    }
                                 }
                             } catch (e: Exception) {
-                                Log.w(TAG, "Camera1 unlock canvas exception on surface=@$surfaceHash: ${e.message}")
+                                Log.w(TAG, "Camera1 unlock canvas exception: ${e.message}")
                             }
                         }
                     }
-                    Thread.sleep(33L)
+                    Thread.sleep(12L)
                 } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {
                     Log.w(TAG, "Camera1 render cycle exception: ${e.message}")
                 }
             }
-            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Camera1 frame pump loop exited for surface=@$surfaceHash")
+            Log.i(TAG, "[FRAME_SOURCE_STOPPED] Camera1 frame pump loop exited")
         }
     }
 

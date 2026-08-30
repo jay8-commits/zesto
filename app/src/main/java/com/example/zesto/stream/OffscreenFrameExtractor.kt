@@ -103,10 +103,9 @@ class OffscreenFrameExtractor(
     private var textureBuffer: FloatBuffer? = null
     private var pixelBuffer: ByteBuffer? = null
     private var flippedPixelBuffer: ByteBuffer? = null
-    private var reusableBitmap: Bitmap? = null
-    private var reusableRowBuffer: ByteArray? = null
-    private val bitmapPool: Array<Bitmap?> = arrayOfNulls(2)
-    private var poolIndex = 0
+    private var cachedRowBytes: ByteArray? = null
+    private var bitmapRing: Array<Bitmap>? = null
+    private var ringIndex = 0
 
     @Volatile
     private var isInitialized = false
@@ -115,10 +114,6 @@ class OffscreenFrameExtractor(
     private var isReleased = false
 
     private var frameCount = 0L
-    private val surfaceTextureCallbackCount = java.util.concurrent.atomic.AtomicLong(0L)
-    private var processCount = 0L
-    @Volatile private var lastCallbackTimestampMs = 0L
-    @Volatile private var lastProcessTimestampMs = 0L
 
     init {
         initGlThread()
@@ -466,19 +461,10 @@ class OffscreenFrameExtractor(
             )
 
             setOnFrameAvailableListener(
-                { stListener ->
-                    val cb = surfaceTextureCallbackCount.incrementAndGet()
-                    lastCallbackTimestampMs = System.currentTimeMillis()
-                    val ts = try { stListener?.timestamp ?: 0L } catch (_: Throwable) { 0L }
-                    if (cb == 1L || cb % 30L == 0L) {
-                        Log.i(TAG, "[SURFACE_TEXTURE_FRAME] callbackCount=$cb timestamp=$ts threadAlive=${glThread?.isAlive} isReleased=$isReleased")
-                    }
+                {
                     if (!isReleased) {
-                        val posted = glHandler?.post {
+                        glHandler?.post {
                             processFrame()
-                        }
-                        if (posted != true && (cb == 1L || cb % 30L == 0L)) {
-                            Log.w(TAG, "[SURFACE_TEXTURE_FRAME] Warning: glHandler post returned false")
                         }
                     }
                 },
@@ -636,12 +622,15 @@ class OffscreenFrameExtractor(
             )
                 .order(ByteOrder.nativeOrder())
 
-        reusableBitmap =
+        cachedRowBytes = ByteArray(videoWidth * 4)
+
+        bitmapRing = Array(2) {
             Bitmap.createBitmap(
                 videoWidth,
                 videoHeight,
                 Bitmap.Config.ARGB_8888
             )
+        }
     }
 
     fun updateDimensions(
@@ -710,14 +699,16 @@ class OffscreenFrameExtractor(
                     )
                         .order(ByteOrder.nativeOrder())
 
-                reusableBitmap?.recycle()
+                cachedRowBytes = ByteArray(width * 4)
 
-                reusableBitmap =
+                bitmapRing?.forEach { it.recycle() }
+                bitmapRing = Array(2) {
                     Bitmap.createBitmap(
                         width,
                         height,
                         Bitmap.Config.ARGB_8888
                     )
+                }
 
                 Log.i(
                     TAG,
@@ -763,16 +754,7 @@ class OffscreenFrameExtractor(
             val st = surfaceTexture
                 ?: return
 
-            val pCount = ++processCount
-            lastProcessTimestampMs = System.currentTimeMillis()
-
-            try {
-                st.updateTexImage()
-            } catch (e: Throwable) {
-                Log.w(TAG, "[EXTRACTOR_PROCESS_ERROR] updateTexImage failed: ${e.message}", e)
-                return
-            }
-
+            st.updateTexImage()
             st.getTransformMatrix(
                 stMatrix
             )
@@ -942,11 +924,11 @@ class OffscreenFrameExtractor(
             flippedBuf.rewind()
 
             val rowStride = width * 4
-            var rowBytes = reusableRowBuffer
-            if (rowBytes == null || rowBytes.size != rowStride) {
-                rowBytes = ByteArray(rowStride)
-                reusableRowBuffer = rowBytes
+            if (cachedRowBytes == null || cachedRowBytes?.size != rowStride) {
+                cachedRowBytes = ByteArray(rowStride)
             }
+            val rowBytes = cachedRowBytes!!
+
             for (y in 0 until height) {
                 pBuf.position((height - 1 - y) * rowStride)
                 pBuf.get(rowBytes, 0, rowStride)
@@ -954,27 +936,16 @@ class OffscreenFrameExtractor(
             }
             flippedBuf.rewind()
 
-            val targetSlot = poolIndex % 2
-            val existingBmp = bitmapPool[targetSlot]
-            val frameBitmap = if (existingBmp != null && !existingBmp.isRecycled && existingBmp.width == width && existingBmp.height == height) {
-                existingBmp
-            } else {
-                try {
-                    existingBmp?.recycle()
-                } catch (_: Throwable) {}
-                val newBmp = Bitmap.createBitmap(
-                    width,
-                    height,
-                    Bitmap.Config.ARGB_8888
-                )
-                bitmapPool[targetSlot] = newBmp
-                newBmp
+            if (bitmapRing == null || bitmapRing?.get(0)?.width != width || bitmapRing?.get(0)?.height != height) {
+                bitmapRing?.forEach { it.recycle() }
+                bitmapRing = Array(2) {
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                }
             }
-            poolIndex++
 
-            frameBitmap.copyPixelsFromBuffer(
-                flippedBuf
-            )
+            ringIndex = (ringIndex + 1) % 2
+            val frameBitmap = bitmapRing!![ringIndex]
+            frameBitmap.copyPixelsFromBuffer(flippedBuf)
 
             val count = ++frameCount
 
@@ -983,16 +954,8 @@ class OffscreenFrameExtractor(
 
             if (
                 count == 1L ||
-                count % 30L == 0L
+                count % 60L == 0L
             ) {
-                Log.i(
-                    TAG,
-                    "[EXTRACTOR_PROCESS] processCount=$pCount timestamp=$timestampUs decoderFrameNumber=$count"
-                )
-                Log.i(
-                    TAG,
-                    "[RTSP_DECODED_FRAME] decoderFrameNumber=$count timestamp=$timestampUs width=$width height=$height"
-                )
                 Log.i(
                     TAG,
                     "[RTSP_FRAME_ORIENTATION] source=TOP_DOWN target=TOP_DOWN verticalFlipApplied=true"
@@ -1206,34 +1169,5 @@ class OffscreenFrameExtractor(
                 glHandler = null
             }
         }
-    }
-
-    data class ExtractorHealthInfo(
-        val threadAlive: Boolean,
-        val surfaceValid: Boolean,
-        val surfaceTextureValid: Boolean,
-        val callbackCount: Long,
-        val processCount: Long,
-        val frameCount: Long,
-        val lastCallbackAgeMs: Long,
-        val lastProcessAgeMs: Long,
-        val isReleased: Boolean
-    )
-
-    fun getHealthInfo(): ExtractorHealthInfo {
-        val now = System.currentTimeMillis()
-        val lastCb = lastCallbackTimestampMs
-        val lastProc = lastProcessTimestampMs
-        return ExtractorHealthInfo(
-            threadAlive = glThread?.isAlive == true,
-            surfaceValid = outputSurface?.isValid == true,
-            surfaceTextureValid = surfaceTexture != null,
-            callbackCount = surfaceTextureCallbackCount.get(),
-            processCount = processCount,
-            frameCount = frameCount,
-            lastCallbackAgeMs = if (lastCb > 0) now - lastCb else -1L,
-            lastProcessAgeMs = if (lastProc > 0) now - lastProc else -1L,
-            isReleased = isReleased
-        )
     }
 }

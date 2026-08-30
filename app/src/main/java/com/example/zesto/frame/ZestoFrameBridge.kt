@@ -64,6 +64,7 @@ object ZestoFrameBridge {
 
     data class FrameData(
         val frameId: Long = 0L,
+        val sequence: Long = 0L,
         val timestampUs: Long = 0L,
         val timestampEpochMs: Long = 0L,
         val width: Int = 1280,
@@ -71,6 +72,7 @@ object ZestoFrameBridge {
         val format: PixelFormat = PixelFormat.RGBA_8888,
         val buffer: ByteArray? = null,
         val bitmap: Bitmap? = null,
+        val jpegBuffer: ByteArray? = null,
         val sourceMode: FrameSourceMode = FrameSourceMode.RTSP
     )
 
@@ -482,9 +484,21 @@ object ZestoFrameBridge {
          * This replaces the previous frame atomically from the
          * StateFlow consumer's point of view.
          */
+        var precompressedJpeg: ByteArray? = null
+        if (bitmap != null && !bitmap.isRecycled) {
+            try {
+                val baos = java.io.ByteArrayOutputStream(65536)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+                precompressedJpeg = baos.toByteArray()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Frame precompression warning: ${t.message}")
+            }
+        }
+
         val frame =
             FrameData(
                 frameId = id,
+                sequence = id,
                 timestampUs = timestampUs,
                 timestampEpochMs = nowMs,
                 width = width,
@@ -492,6 +506,7 @@ object ZestoFrameBridge {
                 format = format,
                 buffer = buffer,
                 bitmap = bitmap,
+                jpegBuffer = precompressedJpeg,
                 sourceMode = sourceMode
             )
 

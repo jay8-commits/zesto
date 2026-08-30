@@ -50,11 +50,6 @@ class ZestoFrameContentProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         ZestoFrameBridge.setProviderRunning(true)
         ZestoFrameBridge.setBridgeReady(true)
-        try {
-            com.example.zesto.ipc.ZestoIpcSocketServer.startServer()
-            com.example.zesto.ipc.ZestoSharedMemoryBridge.initServer()
-        } catch (_: Throwable) {}
-        Log.i(TAG, "[PROVIDER_STARTED] package=com.example.zesto authority=$AUTHORITY uri=$CONTENT_URI transport=CONTENT_PROVIDER")
         Log.i(TAG, "[FRAME_PROVIDER] provider created")
         Log.i(TAG, "[FRAME_PROVIDER] provider registered/available (providerRunning=true)")
         Log.i(TAG, "[ZESTO_PROCESS_INIT] ZestoFrameContentProvider initialized.")
@@ -123,17 +118,25 @@ class ZestoFrameContentProvider : ContentProvider() {
                 result.putBoolean(KEY_IS_STREAMING, health == FrameHealthState.FRAME_ACTIVE && isProvRunning)
                 result.putString("source_mode", frame.sourceMode.name)
 
+                result.putLong("sequence", frame.sequence)
+                result.putLong("publish_count", ZestoFrameBridge.totalFramesReceived)
+
                 var jpegSize = 0
-                if (frame.bitmap != null && !frame.bitmap.isRecycled) {
+                val jpegBytes = frame.jpegBuffer
+                if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                    jpegSize = jpegBytes.size
+                    result.putByteArray("jpeg_buffer", jpegBytes)
+                    result.putInt("jpeg_size", jpegSize)
+                } else if (frame.bitmap != null && !frame.bitmap.isRecycled) {
                     try {
                         val baos = java.io.ByteArrayOutputStream()
                         frame.bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, baos)
-                        val jpegBytes = baos.toByteArray()
-                        jpegSize = jpegBytes.size
-                        result.putByteArray("jpeg_buffer", jpegBytes)
+                        val bytes = baos.toByteArray()
+                        jpegSize = bytes.size
+                        result.putByteArray("jpeg_buffer", bytes)
                         result.putInt("jpeg_size", jpegSize)
                     } catch (e: Throwable) {
-                        Log.w(TAG, "Error compressing frame to JPEG: ${e.message}")
+                        Log.w(TAG, "Error compressing fallback frame to JPEG: ${e.message}")
                     }
                 }
                 if (buffer != null) {
@@ -141,8 +144,7 @@ class ZestoFrameContentProvider : ContentProvider() {
                 }
 
                 if (frame.frameId == 1L || frame.frameId % 60L == 0L) {
-                    Log.i(TAG, "[PROVIDER_CONNECT_SUCCESS] package=com.example.zesto caller=${callingPackage ?: "unknown"} method=$method frameId=${frame.frameId} res=${frame.width}x${frame.height} sourceMode=${frame.sourceMode} health=$health transport=CONTENT_PROVIDER")
-                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} sourceMode=${frame.sourceMode} hasBitmap=${frame.bitmap != null} jpegSize=${jpegSize}B rawSize=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms isTestPattern=${ZestoFrameBridge.isTestPatternMode}")
+                    Log.i(TAG, "[IPC_FRAME_RETURNED] frameId=${frame.frameId} seq=${frame.sequence} sourceMode=${frame.sourceMode} hasBitmap=${frame.bitmap != null} jpegSize=${jpegSize}B rawSize=${buffer?.size ?: 0}B timestampUs=${frame.timestampUs} health=$health elapsed=${msAgo}ms isTestPattern=${ZestoFrameBridge.isTestPatternMode}")
                 }
             }
             METHOD_GET_FRAME_META -> {
@@ -183,10 +185,11 @@ class ZestoFrameContentProvider : ContentProvider() {
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
         val frame = ZestoFrameBridge.consumeLatestFrame()
+        val jpegBuf = frame.jpegBuffer
         val bmp = frame.bitmap
         val buffer = frame.buffer
 
-        if (bmp == null && buffer == null) return null
+        if (jpegBuf == null && bmp == null && buffer == null) return null
 
         val pipe = ParcelFileDescriptor.createPipe()
         val readSide = pipe[0]
@@ -195,7 +198,9 @@ class ZestoFrameContentProvider : ContentProvider() {
         pipeExecutor.execute {
             try {
                 FileOutputStream(writeSide.fileDescriptor).use { output ->
-                    if (bmp != null && !bmp.isRecycled) {
+                    if (jpegBuf != null && jpegBuf.isNotEmpty()) {
+                        output.write(jpegBuf)
+                    } else if (bmp != null && !bmp.isRecycled) {
                         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, output)
                     } else if (buffer != null) {
                         output.write(buffer)

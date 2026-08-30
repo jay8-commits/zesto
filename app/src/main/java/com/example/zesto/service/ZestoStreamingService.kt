@@ -268,7 +268,8 @@ class ZestoStreamingService : Service() {
 
                     when (state) {
 
-                        is StreamState.Connected -> {
+                        is StreamState.Connected,
+                        is StreamState.Streaming -> {
 
                             _runtimeState.value =
                                 ServiceRuntimeState
@@ -279,6 +280,9 @@ class ZestoStreamingService : Service() {
                                     .STREAM_ACTIVE_IN_BACKGROUND
                         }
 
+                        is StreamState.Stalling,
+                        is StreamState.Stalled,
+                        is StreamState.Recovering,
                         is StreamState.Reconnecting -> {
 
                             _runtimeState.value =
@@ -518,6 +522,18 @@ class ZestoStreamingService : Service() {
 
                 is StreamState.Connected ->
                     "Streaming active: ${state.url}"
+
+                is StreamState.Streaming ->
+                    "Streaming: ${state.url} (%.1f FPS)".format(java.util.Locale.US, state.fps)
+
+                is StreamState.Stalling ->
+                    "Stream stalling (${state.stallAgeMs}ms)..."
+
+                is StreamState.Stalled ->
+                    "Stream stalled at frame ${state.lastFrameId}"
+
+                is StreamState.Recovering ->
+                    "Recovering stream (${state.attempt}/${state.maxAttempts})..."
 
                 is StreamState.Connecting ->
                     "Connecting to RTSP stream..."

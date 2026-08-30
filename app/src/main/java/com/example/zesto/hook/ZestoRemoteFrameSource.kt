@@ -16,7 +16,6 @@ import com.example.zesto.frame.ZestoFrameTransformer
 data class RemoteFrameResult(
     val frameId: Long = 0L,
     val sequence: Long = 0L,
-    val isNewFrame: Boolean = true,
     val bitmap: Bitmap? = null,
     val width: Int = 1080,
     val height: Int = 1920,

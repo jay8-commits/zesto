@@ -69,13 +69,17 @@ class DiagnosticsManager(
     fun updateTransport(state: StreamState, stats: StreamStats, url: String) {
         val statusStr = when (state) {
             is StreamState.Connected -> "CONNECTED"
+            is StreamState.Streaming -> "STREAMING (${String.format(java.util.Locale.US, "%.1f", state.fps)} FPS)"
+            is StreamState.Stalling -> "STALLING (${state.stallAgeMs}ms)"
+            is StreamState.Stalled -> "STALLED (${state.stallAgeMs}ms)"
+            is StreamState.Recovering -> "RECOVERING (${state.attempt}/${state.maxAttempts}: ${state.reason})"
             is StreamState.Connecting -> "CONNECTING"
             is StreamState.Reconnecting -> "RECONNECTING (${state.attempt}/${state.maxAttempts})"
             is StreamState.Disconnected -> "DISCONNECTED"
             is StreamState.Error -> "ERROR: ${state.message}"
         }
 
-        if (state is StreamState.Error || state is StreamState.Disconnected || state is StreamState.Reconnecting) {
+        if (state is StreamState.Error || state is StreamState.Disconnected || state is StreamState.Reconnecting || state is StreamState.Recovering) {
             removeBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
         }
 

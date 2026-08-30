@@ -1171,7 +1171,7 @@ class RTSPPlayerEngine(
 
     private fun handlePlaybackFailure(
         reason: String,
-        cause: Throwable?
+        cause: Throwable? = null
     ) {
 
         val config =
@@ -1520,7 +1520,11 @@ class RTSPPlayerEngine(
                             try {
                                 val cfg = activeConfig
                                 if (cfg != null) {
-                                    _streamState.value = StreamState.Recovering("Watchdog detected stall at frame $rendered")
+                                    _streamState.value = StreamState.Recovering(
+                                        attempt = (consecutiveStallCount / 6).coerceAtLeast(1),
+                                        maxAttempts = cfg.maxReconnectAttempts,
+                                        reason = "Watchdog detected stall at frame $rendered"
+                                    )
                                     connectInternal(cfg)
                                 }
                             } catch (e: Throwable) {

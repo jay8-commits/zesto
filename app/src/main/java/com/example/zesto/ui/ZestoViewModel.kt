@@ -29,6 +29,7 @@ import com.example.zesto.stream.StreamConfig
 import com.example.zesto.stream.StreamReceiver
 import com.example.zesto.stream.StreamState
 import com.example.zesto.stream.TransportProtocol
+import com.example.zesto.stream.ZestoStreamEngineManager
 import com.example.zesto.target.CompatibilityManager
 import com.example.zesto.target.TargetProfile
 import com.example.zesto.testtarget.ControlledCameraTestActivity
@@ -42,7 +43,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferences = ZestoPreferences(application)
 
-    val rtspPlayerEngine = ZestoStreamEngineManager.apply { initialize(application) }.getEngine()
+    val rtspPlayerEngine: RTSPPlayerEngine
+        get() = ZestoStreamEngineManager.getEngine()
 
     private val rtspTransport = RTSPTransport()
 
@@ -53,8 +55,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     val videoDecoder: VideoDecoder =
         HardwareVideoDecoder()
 
-    val framePipeline =
-        FramePipeline()
+    val framePipeline: FramePipeline
+        get() = ZestoStreamEngineManager.framePipeline
 
     private val cameraDetector =
         CameraApiDetector(application)
@@ -62,8 +64,8 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     val compatibilityManager =
         CompatibilityManager()
 
-    val diagnosticsManager =
-        DiagnosticsManager()
+    val diagnosticsManager: DiagnosticsManager
+        get() = ZestoStreamEngineManager.diagnosticsManager
 
     private var activeBackend:
         CameraVirtualizationBackend? = null
@@ -104,6 +106,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        ZestoStreamEngineManager.initialize(application)
 
         val initialConfig =
             preferences.loadStreamConfig()
@@ -160,21 +163,6 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
             Subsystem.SYSTEM,
             "Zesto Authoritative RTSP Stream & Virtualization Pipeline Initialized"
         )
-
-        /*
-         * Wire RTSPPlayerEngine real hardware frames -> FramePipeline -> ZestoFrameBridge / Backends
-         */
-        var frameHandoffCount = 0L
-        rtspPlayerEngine.setFrameListener { frame ->
-            framePipeline.pushFrame(frame)
-            frameHandoffCount++
-            if (frameHandoffCount == 1L || frameHandoffCount % 150L == 0L) {
-                diagnosticsManager.logger.debug(
-                    Subsystem.FRAME_PIPELINE,
-                    "Frame #${frame.frameNumber} (${frame.width}x${frame.height}) delivered to ${framePipeline.getActiveConsumerCount()} active consumers"
-                )
-            }
-        }
 
         observeSubsystems()
     }

@@ -214,7 +214,7 @@ object ZestoStreamEngineManager {
                         TAG,
                         "[ZESTO_PIPELINE_HEALTH] decoderFrame=$decoderFrames bridgeFrame=$bridgeFrameId publishedSeq=$publishedSeq " +
                                 "fps=${String.format("%.1f", decStats.fps)} decodeFps=${String.format("%.1f", decStats.fps)} " +
-                                "connectionState=${state.javaClass.simpleName} transport=${streamStats.transportProtocol}"
+                                "connectionState=${state.javaClass.simpleName} protocol=${_streamConfig.value.protocol} bitrate=${streamStats.estimatedBitrateKbps}kbps"
                     )
 
                     if (!isDecoderAdvancing && state is StreamState.Connected && (now - lastHealthLogEpochMs) > 3000L) {

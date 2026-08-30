@@ -24,6 +24,7 @@ import com.example.zesto.frame.ZestoFrameBridge
 import com.example.zesto.stream.RTSPPlayerEngine
 import com.example.zesto.stream.StreamConfig
 import com.example.zesto.stream.StreamState
+import com.example.zesto.stream.ZestoStreamEngineManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -206,46 +207,8 @@ class ZestoStreamingService : Service() {
 
         createNotificationChannel()
 
-        playerEngine =
-            RTSPPlayerEngine(
-                applicationContext,
-                serviceScope
-            )
-
-        // Register default BridgeFrameConsumer so FramePipeline is always active and delivering to ZestoFrameBridge
-        val bridgeConsumer = object : FrameConsumer {
-            override val consumerId: String = "service_bridge_consumer"
-            override val preferredFormat: PixelFormat = PixelFormat.SURFACE_TEXTURE
-
-            override fun onConsumerAttached(provider: FrameProvider) {}
-
-            override fun onFrameAvailable(frame: VideoFrame) {
-                // RTSP frames are posted directly to ZestoFrameBridge by RTSPPlayerEngine.deliverDecodedFrame().
-                // Only post here for other sources (e.g. TEST_PATTERN) to avoid duplicate posts and wasted CPU cycles.
-                if (frame.sourceMode != com.example.zesto.frame.FrameSourceMode.RTSP) {
-                    ZestoFrameBridge.postFrame(
-                        width = frame.width,
-                        height = frame.height,
-                        format = frame.pixelFormat,
-                        buffer = frame.buffer?.array(),
-                        bitmap = frame.bitmap,
-                        timestampUs = frame.timestampUs,
-                        sourceMode = frame.sourceMode,
-                        externalFrameId = frame.frameNumber
-                    )
-                }
-            }
-
-            override fun onConsumerDetached() {}
-        }
-        framePipeline.registerConsumer(bridgeConsumer)
-
-        // Forward frames from RTSPPlayerEngine directly into FramePipeline
-        playerEngine.setFrameListener { frame ->
-            framePipeline.pushFrame(frame)
-        }
-
-        framePipeline.start()
+        ZestoStreamEngineManager.initialize(applicationContext)
+        playerEngine = ZestoStreamEngineManager.getEngine()
 
         ZestoFrameBridge.setProviderRunning(true)
         ZestoFrameBridge.setBridgeReady(true)

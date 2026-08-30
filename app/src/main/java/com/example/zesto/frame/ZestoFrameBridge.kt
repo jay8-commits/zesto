@@ -515,14 +515,7 @@ object ZestoFrameBridge {
 
         // Broadcast to high-performance Android Binder/SharedMemory, Unix Domain Socket Server, and Shared Memory Bridge
         try {
-            var precompressedJpeg: ByteArray? = buffer
-            if (precompressedJpeg == null && bitmap != null && !bitmap.isRecycled) {
-                try {
-                    val baos = ByteArrayOutputStream(width * height / 4)
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
-                    precompressedJpeg = baos.toByteArray()
-                } catch (_: Throwable) {}
-            }
+            val broadcastBytes: ByteArray? = buffer ?: precompressedJpeg
 
             com.example.zesto.ipc.ZestoFrameBinder.writeFrame(
                 frameId = id,
@@ -530,7 +523,7 @@ object ZestoFrameBridge {
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBytes = precompressedJpeg,
+                rawBytes = broadcastBytes,
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
                 healthState = getFrameHealthState().name
             )
@@ -540,7 +533,7 @@ object ZestoFrameBridge {
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBuffer = precompressedJpeg,
+                rawBuffer = broadcastBytes,
                 sourceMode = sourceMode,
                 healthState = getFrameHealthState(),
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null
@@ -551,7 +544,7 @@ object ZestoFrameBridge {
                 width = width,
                 height = height,
                 bitmap = bitmap,
-                rawBytes = precompressedJpeg,
+                rawBytes = broadcastBytes,
                 isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
                 healthState = getFrameHealthState().name
             )

@@ -451,6 +451,33 @@ class OffscreenFrameExtractor(
     }
 
     private var surfaceTextureFrameCount = 0L
+    private var lastCallbackMs = 0L
+    private var lastProcessMs = 0L
+
+    data class HealthInfo(
+        val threadAlive: Boolean,
+        val surfaceValid: Boolean,
+        val surfaceTextureValid: Boolean,
+        val callbackCount: Long,
+        val processCount: Long,
+        val frameCount: Long,
+        val lastCallbackAgeMs: Long,
+        val lastProcessAgeMs: Long
+    )
+
+    fun getHealthInfo(): HealthInfo {
+        val now = System.currentTimeMillis()
+        return HealthInfo(
+            threadAlive = glThread?.isAlive == true,
+            surfaceValid = outputSurface?.isValid == true,
+            surfaceTextureValid = surfaceTexture != null,
+            callbackCount = surfaceTextureFrameCount,
+            processCount = frameCount,
+            frameCount = frameCount,
+            lastCallbackAgeMs = if (lastCallbackMs > 0L) now - lastCallbackMs else -1L,
+            lastProcessAgeMs = if (lastProcessMs > 0L) now - lastProcessMs else -1L
+        )
+    }
 
     private fun initSurfaceTexture() {
         val st = SurfaceTexture(
@@ -465,6 +492,7 @@ class OffscreenFrameExtractor(
             setOnFrameAvailableListener(
                 {
                     val count = ++surfaceTextureFrameCount
+                    lastCallbackMs = System.currentTimeMillis()
                     if (count == 1L || count % 60L == 0L) {
                         Log.i(TAG, "[SURFACE_TEXTURE_FRAME] frameAvailableCount=$count")
                     }
@@ -742,6 +770,7 @@ class OffscreenFrameExtractor(
         }
 
         try {
+            lastProcessMs = System.currentTimeMillis()
             if (
                 !EGL14.eglMakeCurrent(
                     eglDisplay,
@@ -1114,8 +1143,12 @@ class OffscreenFrameExtractor(
                 surfaceTexture?.release()
                 surfaceTexture = null
 
-                reusableBitmap?.recycle()
-                reusableBitmap = null
+                bitmapRing?.forEach { bmp ->
+                    if (!bmp.isRecycled) {
+                        bmp.recycle()
+                    }
+                }
+                bitmapRing = null
 
                 pixelBuffer = null
                 flippedPixelBuffer = null

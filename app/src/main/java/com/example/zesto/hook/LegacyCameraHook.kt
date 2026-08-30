@@ -211,6 +211,7 @@ object LegacyCameraHook {
                     var canvas: Canvas? = null
                     try {
                         if (hasNewFrame && (lastRenderedFrameId == 1L || lastRenderedFrameId % 60L == 0L)) {
+                            Log.i(TAG, "[FRAME_RENDER] frameId=$frameId seq=${frameResult.sequence}")
                             Log.i(TAG, "[FRAME_RENDER_STARTED] id=$frameId")
                             Log.i(TAG, "[SURFACE_ZESTO_RENDER_TARGET] Active render target surface=@$hash valid=${surface.isValid}")
                         }
@@ -239,6 +240,7 @@ object LegacyCameraHook {
                                 if (hasNewFrame) {
                                     val count = substitutedFramesCount.incrementAndGet()
                                     if (count == 1L || count % 60L == 0L) {
+                                        Log.i(TAG, "[FRAME_POSTED_TO_SURFACE] frameId=$frameId seq=${frameResult.sequence}")
                                         Log.i(TAG, "[FRAME_POSTED_TO_OUTPUT] id=$frameId")
                                         val logMsg = "Target preview surface received and displayed frame #$count"
                                         Log.i(TAG, "[TARGET_PREVIEW_RECEIVED_FRAME] $logMsg")

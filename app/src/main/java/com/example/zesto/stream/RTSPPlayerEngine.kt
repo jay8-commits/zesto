@@ -256,7 +256,14 @@ class RTSPPlayerEngine(
                 count == 1L ||
                 count % 60L == 0L
             ) {
-
+                Log.i(
+                    TAG,
+                    "[RTSP_DECODED_FRAME] frameId=$count dimensions=${width}x${height} timestampUs=$timestampUs"
+                )
+                Log.i(
+                    TAG,
+                    "[MEDIACODEC_OUTPUT] frameId=$count renderedFrames=${renderedFramesCount.get()} droppedFrames=${droppedFramesCount.get()}"
+                )
                 Log.i(
                     TAG,
                     "[FRAME_BRIDGE_POSTED] package=com.example.zesto frameId=$count width=$width height=$height sourceMode=RTSP transport=IN_MEMORY_BRIDGE"

@@ -42,7 +42,7 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferences = ZestoPreferences(application)
 
-    val rtspPlayerEngine = RTSPPlayerEngine(application)
+    val rtspPlayerEngine = ZestoStreamEngineManager.apply { initialize(application) }.getEngine()
 
     private val rtspTransport = RTSPTransport()
 
@@ -460,95 +460,59 @@ class ZestoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connectStream() {
-
-        val config =
-            _uiState.value.streamConfig
-
+        val config = _uiState.value.streamConfig
         viewModelScope.launch {
-
             diagnosticsManager.logger.info(
                 Subsystem.TRANSPORT,
-                "Initiating real RTSP stream from ${config.url}"
+                "Initiating authoritative RTSP stream from ${config.url}"
             )
-
-            framePipeline.start()
-
-            rtspPlayerEngine.startStream(
+            com.example.zesto.stream.ZestoStreamEngineManager.connectStream(
+                getApplication(),
                 config
             )
-
             _uiState.update {
                 it.copy(
-                    player =
-                        rtspPlayerEngine.player
+                    player = rtspPlayerEngine.player
                 )
             }
-
-            diagnosticsManager.logger.info(
-                Subsystem.FRAME_PIPELINE,
-                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
-            )
         }
     }
 
     fun disconnectStream() {
-
         viewModelScope.launch {
-
             diagnosticsManager.logger.info(
                 Subsystem.TRANSPORT,
-                "Disconnecting RTSP stream"
+                "Disconnecting RTSP stream via ZestoStreamEngineManager"
             )
-
-            rtspPlayerEngine.stopStream()
-
+            com.example.zesto.stream.ZestoStreamEngineManager.disconnectStream(getApplication())
             streamReceiver.stop()
-
-            stopDecoderAndPipeline()
+            framePipeline.stop()
         }
     }
 
     fun startDecoderAndPipeline() {
-
+        val config = _uiState.value.streamConfig
         viewModelScope.launch {
-
-            val config =
-                _uiState.value.streamConfig
-
             diagnosticsManager.logger.info(
                 Subsystem.DECODER,
-                "Starting hardware decoder and stream ingestion at " +
-                    "${config.targetWidth}x${config.targetHeight}"
+                "Starting hardware decoder via ZestoStreamEngineManager"
             )
-
-            framePipeline.start()
-
-            rtspPlayerEngine.startStream(
+            com.example.zesto.stream.ZestoStreamEngineManager.connectStream(
+                getApplication(),
                 config
             )
-
             _uiState.update {
                 it.copy(
-                    player =
-                        rtspPlayerEngine.player
+                    player = rtspPlayerEngine.player
                 )
             }
-
-            diagnosticsManager.logger.info(
-                Subsystem.FRAME_PIPELINE,
-                "Frame delivery pipeline active with ${framePipeline.getActiveConsumerCount()} registered consumers"
-            )
         }
     }
 
     fun stopDecoderAndPipeline() {
-
         viewModelScope.launch {
-
-            rtspPlayerEngine.stopStream()
-
+            com.example.zesto.stream.ZestoStreamEngineManager.disconnectStream(getApplication())
             framePipeline.stop()
-
             diagnosticsManager.logger.info(
                 Subsystem.DECODER,
                 "Decoder and pipeline stopped"

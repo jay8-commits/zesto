@@ -262,6 +262,7 @@ object ZestoRemoteFrameSource {
 
                 if (reads == 1L || reads % 60L == 0L || (now - lastIpcLogMs) > 2000L) {
                     lastIpcLogMs = now
+                    Log.i(TAG, "[REMOTE_FRAME_RECEIVED] frameId=$frameId seq=$sequence isNewFrame=true transport=$transportUsed")
                     Log.i(TAG, "[FRAME_HANDLE_READ] frameId=$frameId seq=$sequence isNewFrame=true")
                     Log.i(TAG, "[IPC_FRAME_TRANSPORT] transport=$transportUsed frameId=$frameId seq=$sequence dimensions=${width}x${height} bufferSize=${bufferSize}B")
                 }

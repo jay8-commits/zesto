@@ -178,6 +178,7 @@ object ZestoStreamEngineManager {
         diagnosticsManager.logger.info(Subsystem.TRANSPORT, "Authoritative disconnect requested")
 
         getEngine().stopStream()
+        ZestoFrameBridge.setProviderRunning(false)
 
         try {
             ZestoStreamingService.stopStreaming(context)

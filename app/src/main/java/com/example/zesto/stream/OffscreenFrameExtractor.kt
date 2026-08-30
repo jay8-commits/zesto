@@ -450,6 +450,8 @@ class OffscreenFrameExtractor(
         )
     }
 
+    private var surfaceTextureFrameCount = 0L
+
     private fun initSurfaceTexture() {
         val st = SurfaceTexture(
             oesTextureId
@@ -462,6 +464,10 @@ class OffscreenFrameExtractor(
 
             setOnFrameAvailableListener(
                 {
+                    val count = ++surfaceTextureFrameCount
+                    if (count == 1L || count % 60L == 0L) {
+                        Log.i(TAG, "[SURFACE_TEXTURE_FRAME] frameAvailableCount=$count")
+                    }
                     if (!isReleased) {
                         glHandler?.post {
                             processFrame()
@@ -956,6 +962,10 @@ class OffscreenFrameExtractor(
                 count == 1L ||
                 count % 60L == 0L
             ) {
+                Log.i(
+                    TAG,
+                    "[EXTRACTOR_PROCESS] frameId=$count dimensions=${width}x${height} timestampUs=$timestampUs"
+                )
                 Log.i(
                     TAG,
                     "[RTSP_FRAME_ORIENTATION] source=TOP_DOWN target=TOP_DOWN verticalFlipApplied=true"

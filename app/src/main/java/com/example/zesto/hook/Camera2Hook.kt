@@ -42,11 +42,27 @@ object Camera2Hook {
         HOOK_FAILED
     }
 
+    enum class TargetCameraLifecycle {
+        TARGET_CAMERA_DISCONNECTED,
+        TARGET_CAMERA_OPENING,
+        TARGET_CAMERA_CONFIGURING,
+        TARGET_SURFACE_ATTACHED,
+        TARGET_INJECTION_SYNCHRONIZED,
+        TARGET_INJECTION_STREAMING,
+        TARGET_CAMERA_CLOSING
+    }
+
     private var currentStatus = HookStatus.HOOK_UNINITIALIZED
+    private var targetLifecycleState = TargetCameraLifecycle.TARGET_CAMERA_DISCONNECTED
     private val isPumping = AtomicBoolean(false)
     private val renderExecutor = Executors.newSingleThreadExecutor()
     private var pumpTask: Future<*>? = null
     private val activeSurfaces = CopyOnWriteArrayList<Surface>()
+
+    fun setTargetLifecycleState(state: TargetCameraLifecycle, targetPackage: String = "unknown") {
+        targetLifecycleState = state
+        Log.i(TAG, "[TARGET_LIFECYCLE_STATE] state=$state package=$targetPackage")
+    }
 
     // Dedicated dummy sink to isolate the hardware camera stream
     private var dummySurfaceTexture: SurfaceTexture? = null
@@ -382,6 +398,26 @@ object Camera2Hook {
             }
         }
 
+        // Hook CameraDevice.close()
+        try {
+            XposedHelpers.findAndHookMethod(
+                deviceClass,
+                "close",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.i(TAG, "[CAMERA_METHOD_INTERCEPTED]\nTARGET=$targetPackage\nMETHOD=CameraDevice.close()")
+                        setTargetLifecycleState(TargetCameraLifecycle.TARGET_CAMERA_CLOSING, targetPackage)
+                        stopFramePump()
+                        setTargetLifecycleState(TargetCameraLifecycle.TARGET_CAMERA_DISCONNECTED, targetPackage)
+                    }
+                }
+            )
+            installed++
+            Log.i(TAG, "[HOOK_OK] Hooked CameraDevice.close()")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[HOOK_FAIL] CameraDevice.close(): ${t.message}")
+        }
+
         return installed
     }
 
@@ -503,6 +539,7 @@ object Camera2Hook {
         if (targetPackage != "unknown") {
             ZestoRemoteFrameSource.setAttachedPackage(targetPackage)
         }
+        setTargetLifecycleState(TargetCameraLifecycle.TARGET_CAMERA_OPENING, targetPackage)
         currentStatus = HookStatus.CAMERA2_DEVICE_OPEN_INTERCEPTED
         val msg = "Target process ($targetPackage) requested Camera2 device: cameraId=$cameraId via $methodPath"
         Log.i(TAG, "[CAMERA2_DEVICE_OPEN_INTERCEPTED] $msg")
@@ -517,6 +554,7 @@ object Camera2Hook {
         if (targetPackage != "unknown") {
             ZestoRemoteFrameSource.setAttachedPackage(targetPackage)
         }
+        setTargetLifecycleState(TargetCameraLifecycle.TARGET_CAMERA_CONFIGURING, targetPackage)
         currentStatus = HookStatus.CAMERA2_SESSION_INTERCEPTED
         Log.i(TAG, "[CAMERA2_SESSION_INTERCEPTED] Intercepted $source with ${outputs.size} output surfaces.")
 
@@ -528,7 +566,12 @@ object Camera2Hook {
             activeSurfaces.clear()
             activeSurfaces.addAll(validSurfaces)
 
+            setTargetLifecycleState(TargetCameraLifecycle.TARGET_SURFACE_ATTACHED, targetPackage)
             currentStatus = HookStatus.SURFACE_TARGET_ATTACHED
+            for (s in validSurfaces) {
+                val hash = System.identityHashCode(s).toString(16)
+                Log.i(TAG, "[CAM2_HOOK_SURFACE] surface=@$hash valid=${s.isValid} state=$targetLifecycleState")
+            }
             Log.i(TAG, "[SURFACE_ATTACHED] Attached to ${validSurfaces.size} isolated target surface(s).")
             startFramePump(validSurfaces, targetPackage)
         } else if (outputs.isNotEmpty()) {
@@ -546,6 +589,7 @@ object Camera2Hook {
     fun startFramePump(surfaces: List<Surface>, targetPackage: String = "unknown") {
         stopFramePump()
         isPumping.set(true)
+        setTargetLifecycleState(TargetCameraLifecycle.TARGET_INJECTION_SYNCHRONIZED, targetPackage)
         currentStatus = HookStatus.FRAME_PUMP_ACTIVE
 
         val activeMsg = "Active frame substitution pump rendering 30 FPS frames onto ${surfaces.size} isolated target surface(s)"
@@ -641,11 +685,13 @@ object Camera2Hook {
                                     if (hasNewFrame) {
                                         val count = substitutedFramesCount.incrementAndGet()
 
+                                        Log.i(TAG, "[TARGET_FRAME_RENDER] seq=${frameResult.sequence} frameId=$frameId surface=@$hash count=$count ts=$now")
                                         Log.i(TAG, "[ZESTO_SUBSTITUTION_OUTPUT]\nsurface=Surface@$hash\nframeId=$frameId\nseq=${frameResult.sequence}")
 
                                         if (isPhysicalCameraBypassed && surface.isValid) {
                                             if (!isInjectionConfirmed) {
                                                 isInjectionConfirmed = true
+                                                setTargetLifecycleState(TargetCameraLifecycle.TARGET_INJECTION_STREAMING, targetPackage)
                                                 val confMsg = "INJECTION_CONFIRMED: Target preview Surface@$hash receiving Zesto frame #$count (source #$frameId) with physical HAL bypassed"
                                                 Log.i(TAG, "[INJECTION_STATE] $confMsg")
                                                 ZestoRemoteFrameSource.reportMilestone("INJECTION_CONFIRMED", confMsg)

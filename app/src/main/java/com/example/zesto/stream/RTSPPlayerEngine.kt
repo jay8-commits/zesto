@@ -114,6 +114,11 @@ class RTSPPlayerEngine(
     private var lastFpsTimestamp =
         System.currentTimeMillis()
 
+    private var lastDecodedFrameTimeMs =
+        System.currentTimeMillis()
+
+    private var consecutiveStallCount = 0
+
     private var framesSinceLastFps =
         0L
 
@@ -174,6 +179,11 @@ class RTSPPlayerEngine(
 
         val count =
             renderedFramesCount.incrementAndGet()
+
+        lastDecodedFrameTimeMs = System.currentTimeMillis()
+        consecutiveStallCount = 0
+
+        Log.i(TAG, "[CODEC_OUTPUT] count=$count pts=$timestampUs flags=1")
 
         framesSinceLastFps++
 
@@ -1487,6 +1497,37 @@ class RTSPPlayerEngine(
                         0L
                     }
             )
+        }
+
+        // Watchdog & Fine-grained Stream State Tracking
+        val activeUrl = activeConfig?.url.orEmpty()
+        val stallAgeMs = if (rendered > 0) (now - lastDecodedFrameTimeMs) else 0L
+
+        if (isActuallyPlaying && rendered > 0) {
+            if (stallAgeMs > 5000L) {
+                consecutiveStallCount++
+                if (stallAgeMs > 10000L) {
+                    _streamState.value = StreamState.Stalled(activeUrl, stallAgeMs, rendered)
+                    Log.w(TAG, "[RTSP_WATCHDOG_STALLED] No new frames for ${stallAgeMs}ms at frame $rendered. Triggering player recovery...")
+                    if (activeConfig?.autoReconnect == true && consecutiveStallCount % 6 == 0) {
+                        scope.launch {
+                            try {
+                                val cfg = activeConfig
+                                if (cfg != null) {
+                                    _streamState.value = StreamState.Recovering("Watchdog detected stall at frame $rendered")
+                                    connectInternal(cfg)
+                                }
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "Watchdog recovery retry: ${e.message}")
+                            }
+                        }
+                    }
+                } else {
+                    _streamState.value = StreamState.Stalling(activeUrl, stallAgeMs, rendered)
+                }
+            } else {
+                _streamState.value = StreamState.Streaming(activeUrl, fps, lastDecodedFrameTimeMs)
+            }
         }
 
         // Periodic telemetry rate-limited to metrics interval

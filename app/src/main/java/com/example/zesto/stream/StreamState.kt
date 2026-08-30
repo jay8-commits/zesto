@@ -10,6 +10,26 @@ sealed class StreamState {
         val url: String,
         val connectedTimestamp: Long = System.currentTimeMillis()
     ) : StreamState()
+    data class Streaming(
+        val url: String,
+        val fps: Double = 0.0,
+        val lastFrameTimestamp: Long = System.currentTimeMillis()
+    ) : StreamState()
+    data class Stalling(
+        val url: String,
+        val stallAgeMs: Long,
+        val lastFrameId: Long
+    ) : StreamState()
+    data class Stalled(
+        val url: String,
+        val stallAgeMs: Long,
+        val lastFrameId: Long
+    ) : StreamState()
+    data class Recovering(
+        val attempt: Int,
+        val maxAttempts: Int,
+        val reason: String
+    ) : StreamState()
     data class Reconnecting(
         val attempt: Int,
         val maxAttempts: Int,

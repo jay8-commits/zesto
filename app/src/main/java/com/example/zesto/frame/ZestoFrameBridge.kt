@@ -476,6 +476,8 @@ object ZestoFrameBridge {
             Log.i(TAG, "[FRAME_BRIDGE_RECEIVED] decoderFrameNumber=${externalFrameId ?: id} frameId=$id width=$width height=$height sourceMode=$sourceMode")
         }
 
+        Log.i(TAG, "[BRIDGE_INGEST] count=$id frameId=$id format=${format.name}")
+
         /*
          * IMPORTANT:
          *
@@ -512,6 +514,9 @@ object ZestoFrameBridge {
 
         _latestFrame.value =
             frame
+
+        val publishSize = precompressedJpeg?.size ?: (bitmap?.byteCount ?: (buffer?.size ?: 0))
+        Log.i(TAG, "[IPC_PUBLISH] seq=$id shmIndex=0 size=$publishSize")
 
         // Broadcast to high-performance Android Binder/SharedMemory, Unix Domain Socket Server, and Shared Memory Bridge
         try {

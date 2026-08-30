@@ -139,6 +139,19 @@ object ZestoStreamEngineManager {
                                 // Keep attempted or advance
                             }
                         }
+                        is StreamState.Streaming -> {
+                            diagnosticsManager.recordBoundaryStage(BoundaryDiagnosticStage.RTSP_CONNECTED)
+                            _lifecycleState.value = ZestoEngineLifecycleState.RUNNING
+                        }
+                        is StreamState.Stalling -> {
+                            Log.w(TAG, "[STREAM_STALLING] RTSP transport stalled for ${state.stallAgeMs}ms at frame ${state.lastFrameId}")
+                        }
+                        is StreamState.Stalled -> {
+                            Log.e(TAG, "[STREAM_STALLED] RTSP transport completely stalled for ${state.stallAgeMs}ms at frame ${state.lastFrameId}")
+                        }
+                        is StreamState.Recovering -> {
+                            _lifecycleState.value = ZestoEngineLifecycleState.RECONNECTING
+                        }
                         is StreamState.Reconnecting -> {
                             _lifecycleState.value = ZestoEngineLifecycleState.RECONNECTING
                         }

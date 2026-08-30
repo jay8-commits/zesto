@@ -248,6 +248,7 @@ object LegacyCameraHook {
                                 surface.unlockCanvasAndPost(canvas)
                                 if (hasNewFrame) {
                                     val count = substitutedFramesCount.incrementAndGet()
+                                    Log.i(TAG, "[TARGET_FRAME_RENDER] seq=${frameResult.sequence} frameId=$frameId surface=@$hash count=$count ts=$now")
                                     Log.i(TAG, "[ZESTO_SUBSTITUTION_OUTPUT]\nsurface=Surface@$hash\nframeId=$frameId\nseq=${frameResult.sequence}")
                                     if (surface.isValid) {
                                         val confMsg = "INJECTION_CONFIRMED: Camera1 target preview Surface@$hash receiving Zesto frame #$count (source #$frameId)"

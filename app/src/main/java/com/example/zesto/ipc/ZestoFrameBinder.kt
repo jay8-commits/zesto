@@ -12,6 +12,59 @@ import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicLong
+
+private class ZestoFrameBinderImpl : Binder() {
+    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+        val callerUid = Binder.getCallingUid()
+        val callerPid = Binder.getCallingPid()
+
+        when (code) {
+            ZestoFrameBinder.TRANSACTION_GET_SHM_HANDLE -> {
+                data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
+                reply?.writeNoException()
+
+                ZestoFrameBinder.ensureSharedMemoryInitialized()
+                val shm = ZestoFrameBinder.getSharedMemory()
+                if (shm != null && reply != null) {
+                    reply.writeInt(1) // SHM present
+                    shm.writeToParcel(reply, 0)
+                    Log.i(
+                        "ZestoFrameBinder",
+                        "[FRAME_HANDLE_PUBLISHED] callerUid=$callerUid callerPid=$callerPid size=${ZestoFrameBinder.SHM_SIZE} activeSlot=${ZestoFrameBinder.getActiveSlotIndex()} latestSeq=${ZestoFrameBinder.getLatestPublishedSeq()} latestFrameId=${ZestoFrameBinder.getLatestPublishedFrameId()}"
+                    )
+                } else {
+                    reply?.writeInt(0)
+                    Log.w("ZestoFrameBinder", "SharedMemory not available to publish to callerUid=$callerUid")
+                }
+                return true
+            }
+
+            ZestoFrameBinder.TRANSACTION_GET_METADATA -> {
+                data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
+                reply?.writeNoException()
+                val bundle = Bundle()
+                bundle.putInt("shm_size", ZestoFrameBinder.SHM_SIZE)
+                bundle.putInt("slot_size", ZestoFrameBinder.SLOT_SIZE)
+                bundle.putInt("header_magic", ZestoFrameBinder.HEADER_MAGIC)
+                bundle.putInt("server_uid", Process.myUid())
+                bundle.putInt("server_pid", Process.myPid())
+                bundle.putLong("latest_frame_id", ZestoFrameBinder.getLatestPublishedFrameId())
+                bundle.putLong("latest_seq", ZestoFrameBinder.getLatestPublishedSeq())
+                reply?.writeBundle(bundle)
+                return true
+            }
+
+            ZestoFrameBinder.TRANSACTION_PING -> {
+                data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
+                reply?.writeNoException()
+                reply?.writeInt(0) // OK
+                return true
+            }
+        }
+        return super.onTransact(code, data, reply, flags)
+    }
+}
 
 /**
  * Cross-Process Android Binder & SharedMemory frame provider for Zesto.
@@ -35,69 +88,22 @@ object ZestoFrameBinder {
     private var sharedMemory: SharedMemory? = null
     private var writeBuffer: ByteBuffer? = null
     private var activeSlotIndex = 0
-    private val globalSeqCounter = java.util.concurrent.atomic.AtomicLong(10L)
+    private val globalSeqCounter = AtomicLong(10L)
 
-    private val publishCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val publishCounter = AtomicLong(0L)
 
     @Volatile private var latestPublishedFrameId: Long = 0L
     @Volatile private var latestPublishedSeq: Long = 0L
 
-    private class ZestoFrameBinderImpl : Binder() {
-        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-            val callerUid = Binder.getCallingUid()
-            val callerPid = Binder.getCallingPid()
-
-            when (code) {
-                TRANSACTION_GET_SHM_HANDLE -> {
-                    data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
-                    reply?.writeNoException()
-
-                    ensureSharedMemoryInitialized()
-                    val shm = sharedMemory
-                    if (shm != null && reply != null) {
-                        reply.writeInt(1) // SHM present
-                        shm.writeToParcel(reply, 0)
-                        Log.i(TAG, "[FRAME_HANDLE_PUBLISHED] callerUid=$callerUid callerPid=$callerPid size=$SHM_SIZE activeSlot=$activeSlotIndex latestSeq=${globalSeqCounter.get()} latestFrameId=$latestPublishedFrameId")
-                    } else {
-                        reply?.writeInt(0)
-                        Log.w(TAG, "SharedMemory not available to publish to callerUid=$callerUid")
-                    }
-                    return true
-                }
-
-                TRANSACTION_GET_METADATA -> {
-                    data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
-                    reply?.writeNoException()
-                    val bundle = Bundle()
-                    bundle.putInt("shm_size", SHM_SIZE)
-                    bundle.putInt("slot_size", SLOT_SIZE)
-                    bundle.putInt("header_magic", HEADER_MAGIC)
-                    bundle.putInt("server_uid", Process.myUid())
-                    bundle.putInt("server_pid", Process.myPid())
-                    bundle.putLong("latest_frame_id", latestPublishedFrameId)
-                    bundle.putLong("latest_seq", latestPublishedSeq)
-                    reply?.writeBundle(bundle)
-                    return true
-                }
-
-                TRANSACTION_PING -> {
-                    data.enforceInterface("com.example.zesto.ipc.IZestoFrameService")
-                    reply?.writeNoException()
-                    reply?.writeInt(0) // OK
-                    return true
-                }
-            }
-            return super.onTransact(code, data, reply, flags)
-        }
-    }
-
-    private val binderInstance = ZestoFrameBinderImpl()
+    private val binderInstance: IBinder = ZestoFrameBinderImpl()
 
     fun getBinder(): IBinder {
         ensureSharedMemoryInitialized()
         return binderInstance
     }
 
+    fun getSharedMemory(): SharedMemory? = sharedMemory
+    fun getActiveSlotIndex(): Int = activeSlotIndex
     fun getLatestPublishedFrameId(): Long = latestPublishedFrameId
     fun getLatestPublishedSeq(): Long = latestPublishedSeq
 

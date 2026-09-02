@@ -18,7 +18,33 @@ import android.util.Log
 import com.example.zesto.hook.RemoteFrameResult
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+
+private class ZestoBinderServiceConnection : ServiceConnection {
+    override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+        Log.i("ZestoBinderClient", "[BINDER_CLIENT_CONNECTED] via=bindService name=$name uid=${Process.myUid()} pid=${Process.myPid()}")
+        ZestoBinderClient.handleBinderConnected(service)
+    }
+
+    override fun onServiceDisconnected(name: ComponentName?) {
+        Log.w("ZestoBinderClient", "Zesto Binder service disconnected: $name")
+        ZestoBinderClient.handleBinderDisconnected()
+    }
+}
+
+private class ZestoBinderBroadcastReceiver(
+    private val latch: CountDownLatch,
+    private val onBinderReceived: (IBinder?) -> Unit
+) : BroadcastReceiver() {
+    override fun onReceive(c: Context?, rIntent: Intent?) {
+        val extras = getResultExtras(true)
+        val binder = extras?.getBinder(ZestoFrameReceiver.EXTRA_BINDER_HANDLE)
+        onBinderReceived(binder)
+        latch.countDown()
+    }
+}
 
 /**
  * Cross-Process Android Binder & SharedMemory IPC Client for hooked target processes (e.g. OpenCamera).
@@ -53,34 +79,12 @@ object ZestoBinderClient {
     private var clientTotalReadsCount: Long = 0L
     private var clientStaleReadsCount: Long = 0L
 
-    private class ZestoBinderServiceConnection : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            Log.i(TAG, "[BINDER_CLIENT_CONNECTED] via=bindService name=$name uid=${Process.myUid()} pid=${Process.myPid()}")
-            handleBinderConnected(service)
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            Log.w(TAG, "Zesto Binder service disconnected: $name")
-            zestoBinder = null
-            readBuffer = null
-        }
-    }
-
-    private class ZestoBinderBroadcastReceiver(
-        private val syncLock: Object,
-        private val onBinderReceived: (IBinder?) -> Unit
-    ) : BroadcastReceiver() {
-        override fun onReceive(c: Context?, rIntent: Intent?) {
-            val extras = getResultExtras(true)
-            val binder = extras?.getBinder(ZestoFrameReceiver.EXTRA_BINDER_HANDLE)
-            onBinderReceived(binder)
-            synchronized(syncLock) {
-                syncLock.notifyAll()
-            }
-        }
-    }
-
     private val serviceConnection = ZestoBinderServiceConnection()
+
+    fun handleBinderDisconnected() {
+        zestoBinder = null
+        readBuffer = null
+    }
 
     fun isConnected(): Boolean = zestoBinder?.isBinderAlive == true && readBuffer != null
 
@@ -100,7 +104,7 @@ object ZestoBinderClient {
         val myPid = Process.myPid()
         Log.i(TAG, "[BINDER_CLIENT_CONNECT_ATTEMPT] targetPackage=${context.packageName} uid=$myUid pid=$myPid")
 
-        Thread({
+        Thread(Runnable {
             try {
                 // Strategy 1: Ordered Broadcast (Bypasses Android 11-15 Package Visibility filters)
                 for (pkg in CANDIDATE_PACKAGES) {
@@ -110,13 +114,13 @@ object ZestoBinderClient {
                     intent.putExtra("caller_uid", myUid)
                     intent.putExtra("caller_pid", myPid)
 
-                    val syncLock = Object()
+                    val latch = CountDownLatch(1)
                     var receivedBinder: IBinder? = null
 
                     context.sendOrderedBroadcast(
                         intent,
                         null,
-                        ZestoBinderBroadcastReceiver(syncLock) { binder ->
+                        ZestoBinderBroadcastReceiver(latch) { binder ->
                             receivedBinder = binder
                         },
                         null,
@@ -125,17 +129,15 @@ object ZestoBinderClient {
                         null
                     )
 
-                    synchronized(syncLock) {
-                        try {
-                            syncLock.wait(400)
-                        } catch (_: InterruptedException) {}
-                    }
+                    try {
+                        latch.await(400, TimeUnit.MILLISECONDS)
+                    } catch (_: InterruptedException) {}
 
                     if (receivedBinder != null && receivedBinder?.isBinderAlive == true) {
                         Log.i(TAG, "[BINDER_CLIENT_CONNECTED] via=orderedBroadcast pkg=$pkg uid=$myUid pid=$myPid")
                         handleBinderConnected(receivedBinder)
                         isConnecting.set(false)
-                        return@Thread
+                        return@Runnable
                     }
                 }
 

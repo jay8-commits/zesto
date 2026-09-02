@@ -53,7 +53,7 @@ object ZestoBinderClient {
     private var clientTotalReadsCount: Long = 0L
     private var clientStaleReadsCount: Long = 0L
 
-    private val serviceConnection = object : ServiceConnection {
+    private class ZestoBinderServiceConnection : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.i(TAG, "[BINDER_CLIENT_CONNECTED] via=bindService name=$name uid=${Process.myUid()} pid=${Process.myPid()}")
             handleBinderConnected(service)
@@ -65,6 +65,22 @@ object ZestoBinderClient {
             readBuffer = null
         }
     }
+
+    private class ZestoBinderBroadcastReceiver(
+        private val syncLock: Object,
+        private val onBinderReceived: (IBinder?) -> Unit
+    ) : BroadcastReceiver() {
+        override fun onReceive(c: Context?, rIntent: Intent?) {
+            val extras = getResultExtras(true)
+            val binder = extras?.getBinder(ZestoFrameReceiver.EXTRA_BINDER_HANDLE)
+            onBinderReceived(binder)
+            synchronized(syncLock) {
+                syncLock.notifyAll()
+            }
+        }
+    }
+
+    private val serviceConnection = ZestoBinderServiceConnection()
 
     fun isConnected(): Boolean = zestoBinder?.isBinderAlive == true && readBuffer != null
 
@@ -100,14 +116,8 @@ object ZestoBinderClient {
                     context.sendOrderedBroadcast(
                         intent,
                         null,
-                        object : BroadcastReceiver() {
-                            override fun onReceive(c: Context?, rIntent: Intent?) {
-                                val extras = getResultExtras(true)
-                                receivedBinder = extras?.getBinder(ZestoFrameReceiver.EXTRA_BINDER_HANDLE)
-                                synchronized(syncLock) {
-                                    syncLock.notifyAll()
-                                }
-                            }
+                        ZestoBinderBroadcastReceiver(syncLock) { binder ->
+                            receivedBinder = binder
                         },
                         null,
                         Activity.RESULT_OK,

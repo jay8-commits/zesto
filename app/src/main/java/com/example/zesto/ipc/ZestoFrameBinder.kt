@@ -42,7 +42,7 @@ object ZestoFrameBinder {
     @Volatile private var latestPublishedFrameId: Long = 0L
     @Volatile private var latestPublishedSeq: Long = 0L
 
-    private val binderInstance = object : Binder() {
+    private class ZestoFrameBinderImpl : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
             val callerUid = Binder.getCallingUid()
             val callerPid = Binder.getCallingPid()
@@ -90,6 +90,8 @@ object ZestoFrameBinder {
             return super.onTransact(code, data, reply, flags)
         }
     }
+
+    private val binderInstance = ZestoFrameBinderImpl()
 
     fun getBinder(): IBinder {
         ensureSharedMemoryInitialized()

@@ -20,8 +20,8 @@ import java.nio.channels.FileChannel
 object ZestoSharedMemoryBridge {
     private const val TAG = "ZestoSharedMemory"
 
-    private const val SLOT_SIZE = 2 * 1024 * 1024 // 2 MB per slot
-    private const val FILE_SIZE = 4 * 1024 * 1024L // 4 MB total
+    private const val SLOT_SIZE = 4 * 1024 * 1024 // 4 MB per slot
+    private const val FILE_SIZE = 8 * 1024 * 1024L // 8 MB total
     private const val HEADER_MAGIC = 0x5A455354 // "ZEST"
 
     private val CANDIDATE_PATHS = listOf(

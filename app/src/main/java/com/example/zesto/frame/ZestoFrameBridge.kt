@@ -134,6 +134,12 @@ object ZestoFrameBridge {
     private val localTestPatternActive =
         AtomicBoolean(false)
 
+    private val ipcPublishExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ZestoIpcPublisherThread").apply { isDaemon = true }
+    }
+    private val pendingIpcFrame = java.util.concurrent.atomic.AtomicReference<FrameData?>(null)
+    private val isIpcPublishing = AtomicBoolean(false)
+
     val totalFramesReceived: Long
         get() = frameCounter.get()
 
@@ -486,17 +492,6 @@ object ZestoFrameBridge {
          * This replaces the previous frame atomically from the
          * StateFlow consumer's point of view.
          */
-        var precompressedJpeg: ByteArray? = null
-        if (bitmap != null && !bitmap.isRecycled) {
-            try {
-                val baos = java.io.ByteArrayOutputStream(65536)
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
-                precompressedJpeg = baos.toByteArray()
-            } catch (t: Throwable) {
-                Log.w(TAG, "Frame precompression warning: ${t.message}")
-            }
-        }
-
         val frame =
             FrameData(
                 frameId = id,
@@ -508,52 +503,16 @@ object ZestoFrameBridge {
                 format = format,
                 buffer = buffer,
                 bitmap = bitmap,
-                jpegBuffer = precompressedJpeg,
+                jpegBuffer = null,
                 sourceMode = sourceMode
             )
 
         _latestFrame.value =
             frame
 
-        val publishSize = precompressedJpeg?.size ?: (bitmap?.byteCount ?: (buffer?.size ?: 0))
-        Log.i(TAG, "[IPC_PUBLISH] seq=$id shmIndex=0 size=$publishSize")
-
-        // Broadcast to high-performance Android Binder/SharedMemory, Unix Domain Socket Server, and Shared Memory Bridge
-        try {
-            val broadcastBytes: ByteArray? = buffer ?: precompressedJpeg
-
-            com.example.zesto.ipc.ZestoFrameBinder.writeFrame(
-                frameId = id,
-                timestampUs = timestampUs,
-                width = width,
-                height = height,
-                bitmap = bitmap,
-                rawBytes = broadcastBytes,
-                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
-                healthState = getFrameHealthState().name
-            )
-            com.example.zesto.ipc.ZestoIpcSocketServer.updateFrame(
-                frameId = id,
-                timestampUs = timestampUs,
-                width = width,
-                height = height,
-                bitmap = bitmap,
-                rawBuffer = broadcastBytes,
-                sourceMode = sourceMode,
-                healthState = getFrameHealthState(),
-                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null
-            )
-            com.example.zesto.ipc.ZestoSharedMemoryBridge.writeFrame(
-                frameId = id,
-                timestampUs = timestampUs,
-                width = width,
-                height = height,
-                bitmap = bitmap,
-                rawBytes = broadcastBytes,
-                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
-                healthState = getFrameHealthState().name
-            )
-        } catch (_: Throwable) {}
+        // Queue for asynchronous drop-oldest IPC publishing (Binder, SharedMemory, Socket)
+        pendingIpcFrame.set(frame)
+        scheduleIpcPublish()
 
         /*
          * A real frame means the bridge is alive.
@@ -922,5 +881,83 @@ object ZestoFrameBridge {
             TAG,
             "[FRAME_BRIDGE_RESET] Bridge reset; source mode restored to RTSP"
         )
+    }
+
+    private fun scheduleIpcPublish() {
+        if (isIpcPublishing.compareAndSet(false, true)) {
+            ipcPublishExecutor.execute {
+                try {
+                    while (true) {
+                        val frameToPublish = pendingIpcFrame.getAndSet(null) ?: break
+                        val bitmap = frameToPublish.bitmap
+                        val width = frameToPublish.width
+                        val height = frameToPublish.height
+                        val id = frameToPublish.frameId
+                        val timestampUs = frameToPublish.timestampUs
+                        val sourceMode = frameToPublish.sourceMode
+                        val buffer = frameToPublish.buffer
+
+                        // Precompress JPEG once for all IPC transports if bitmap present
+                        var jpegBytes: ByteArray? = buffer ?: frameToPublish.jpegBuffer
+                        if (jpegBytes == null && bitmap != null && !bitmap.isRecycled) {
+                            try {
+                                val baos = ByteArrayOutputStream(width * height / 4)
+                                bitmap.compress(Bitmap.CompressFormat.JPEG, 75, baos)
+                                jpegBytes = baos.toByteArray()
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "Frame precompression warning: ${t.message}")
+                            }
+                        }
+
+                        // Cache precompressed JPEG in latestFrame if still on current frame
+                        if (jpegBytes != null && _latestFrame.value.frameId == id && _latestFrame.value.jpegBuffer == null) {
+                            _latestFrame.update { if (it.frameId == id) it.copy(jpegBuffer = jpegBytes) else it }
+                        }
+
+                        val publishSize = jpegBytes?.size ?: (bitmap?.byteCount ?: (buffer?.size ?: 0))
+                        Log.i(TAG, "[IPC_PUBLISH] seq=$id shmIndex=0 size=$publishSize")
+
+                        try {
+                            com.example.zesto.ipc.ZestoFrameBinder.writeFrame(
+                                frameId = id,
+                                timestampUs = timestampUs,
+                                width = width,
+                                height = height,
+                                bitmap = bitmap,
+                                rawBytes = jpegBytes,
+                                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
+                                healthState = getFrameHealthState().name
+                            )
+                            com.example.zesto.ipc.ZestoIpcSocketServer.updateFrame(
+                                frameId = id,
+                                timestampUs = timestampUs,
+                                width = width,
+                                height = height,
+                                bitmap = bitmap,
+                                rawBuffer = jpegBytes,
+                                sourceMode = sourceMode,
+                                healthState = getFrameHealthState(),
+                                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null
+                            )
+                            com.example.zesto.ipc.ZestoSharedMemoryBridge.writeFrame(
+                                frameId = id,
+                                timestampUs = timestampUs,
+                                width = width,
+                                height = height,
+                                bitmap = bitmap,
+                                rawBytes = jpegBytes,
+                                isStreaming = sourceMode == FrameSourceMode.RTSP || bitmap != null,
+                                healthState = getFrameHealthState().name
+                            )
+                        } catch (_: Throwable) {}
+                    }
+                } finally {
+                    isIpcPublishing.set(false)
+                    if (pendingIpcFrame.get() != null) {
+                        scheduleIpcPublish()
+                    }
+                }
+            }
+        }
     }
 }

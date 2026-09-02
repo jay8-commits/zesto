@@ -114,6 +114,9 @@ class OffscreenFrameExtractor(
     @Volatile
     private var isReleased = false
 
+    private val isFrameProcessing = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val hasPendingFrame = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private var frameCount = 0L
     private val surfaceTextureCallbackCount = java.util.concurrent.atomic.AtomicLong(0L)
     private var processCount = 0L
@@ -475,11 +478,17 @@ class OffscreenFrameExtractor(
                         Log.i(TAG, "[SURFACE_TEXTURE_FRAME] callbackCount=$cb timestamp=$ts threadAlive=${glThread?.isAlive} isReleased=$isReleased")
                     }
                     if (!isReleased) {
-                        val posted = glHandler?.post {
-                            processFrame()
-                        }
-                        if (posted != true && (cb == 1L || cb % 30L == 0L)) {
-                            Log.w(TAG, "[SURFACE_TEXTURE_FRAME] Warning: glHandler post returned false")
+                        hasPendingFrame.set(true)
+                        if (isFrameProcessing.compareAndSet(false, true)) {
+                            val posted = glHandler?.post {
+                                processFrame()
+                            }
+                            if (posted != true) {
+                                isFrameProcessing.set(false)
+                                if (cb == 1L || cb % 30L == 0L) {
+                                    Log.w(TAG, "[SURFACE_TEXTURE_FRAME] Warning: glHandler post returned false")
+                                }
+                            }
                         }
                     }
                 },
@@ -767,6 +776,25 @@ class OffscreenFrameExtractor(
     }
 
     private fun processFrame() {
+        try {
+            while (!isReleased && isInitialized) {
+                hasPendingFrame.set(false)
+                processSingleFrame()
+                if (!hasPendingFrame.get()) {
+                    break
+                }
+            }
+        } finally {
+            isFrameProcessing.set(false)
+            if (hasPendingFrame.get() && !isReleased) {
+                if (isFrameProcessing.compareAndSet(false, true)) {
+                    glHandler?.post { processFrame() }
+                }
+            }
+        }
+    }
+
+    private fun processSingleFrame() {
         val extractStartTimeMs = System.currentTimeMillis()
         if (
             isReleased ||

@@ -139,6 +139,9 @@ object CameraXHook {
 
         pumpTask = renderExecutor.submit {
             var cycleCount = 0L
+            var lastRenderedFrameId = -1L
+            var lastRenderedSeq = -1L
+            var duplicateSkipCount = 0L
             val hash = System.identityHashCode(surface).toString(16)
 
             while (isPumping.get() && surface.isValid) {
@@ -148,6 +151,20 @@ object CameraXHook {
                     val bitmap = frameResult.bitmap
                     cycleCount++
                     val frameId = if (frameResult.frameId > 0) frameResult.frameId else cycleCount
+
+                    val isDuplicate = (frameResult.sequence > 0L && frameResult.sequence == lastRenderedSeq) ||
+                                      (!frameResult.isNewFrame && lastRenderedSeq > 0L && frameResult.frameId == lastRenderedFrameId)
+
+                    if (isDuplicate) {
+                        duplicateSkipCount++
+                        if (duplicateSkipCount == 1L || duplicateSkipCount % 60L == 0L) {
+                            Log.d(TAG, "[FRAME_SKIP_DUPLICATE] frameId=$frameId seq=${frameResult.sequence} lastRenderedSeq=$lastRenderedSeq skips=$duplicateSkipCount")
+                        }
+                        val elapsed = System.currentTimeMillis() - cycleStartTime
+                        val sleepMs = (8L - elapsed).coerceIn(2L, 10L)
+                        Thread.sleep(sleepMs)
+                        continue
+                    }
 
                     var canvas: Canvas? = null
                     try {
@@ -177,6 +194,8 @@ object CameraXHook {
                         if (canvas != null) {
                             try {
                                 surface.unlockCanvasAndPost(canvas)
+                                lastRenderedFrameId = frameId
+                                lastRenderedSeq = frameResult.sequence
                                 val count = substitutedFramesCount.incrementAndGet()
                                 TargetCameraLifecycleManager.onFrameRendered(
                                     apiName = "CAMERAX",
